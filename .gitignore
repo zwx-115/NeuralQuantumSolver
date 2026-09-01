@@ -1,0 +1,9 @@
+.deps/
+.venv/
+.pytest_cache/
+.test-tmp/
+checkpoint-test.pt
+__pycache__/
+*.py[cod]
+*.egg-info/
+checkpoints/
