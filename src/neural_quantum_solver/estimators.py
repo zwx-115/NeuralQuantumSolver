@@ -59,8 +59,13 @@ def exact_state(model: NeuralQuantumState, system: PhysicalSystem) -> ExactState
     configurations = system.hilbert.all_states(device=device)
     log_amplitudes = model.log_psi(configurations)
     log_norm = torch.logsumexp(2 * log_amplitudes.real, dim=0)
-    amplitudes = torch.exp(log_amplitudes - 0.5 * log_norm)
-    probabilities = torch.abs(amplitudes) ** 2
+    normalized_log = log_amplitudes - 0.5 * log_norm
+    magnitude = torch.exp(normalized_log.real)
+    amplitudes = torch.complex(
+        magnitude * torch.cos(normalized_log.imag),
+        magnitude * torch.sin(normalized_log.imag),
+    )
+    probabilities = torch.exp(2 * log_amplitudes.real - log_norm)
     return ExactState(configurations, log_amplitudes, amplitudes, probabilities, log_norm)
 
 
@@ -71,17 +76,37 @@ def exact_energy(
     dtype = dtype or state.amplitudes.dtype
     connections = system.hamiltonian.connections(state.configurations, dtype=dtype)
     connected_log_psi = model.log_psi(connections.states)
-    terms = connections.matrix_elements * torch.exp(
-        connected_log_psi - state.log_amplitudes[connections.sample_indices]
+    delta = connected_log_psi - state.log_amplitudes[connections.sample_indices]
+    magnitude = torch.exp(delta.real)
+    exponential_real = magnitude * torch.cos(delta.imag)
+    exponential_imag = magnitude * torch.sin(delta.imag)
+    matrix_real = connections.matrix_elements.real
+    matrix_imag = connections.matrix_elements.imag
+    terms_real = (
+        matrix_real * exponential_real - matrix_imag * exponential_imag
     )
-    local = torch.zeros(
-        system.hilbert.size, dtype=dtype, device=state.amplitudes.device
+    terms_imag = (
+        matrix_real * exponential_imag + matrix_imag * exponential_real
     )
-    local.index_add_(0, connections.sample_indices, terms)
-    probabilities = state.probabilities.to(local.real.dtype)
-    energy_complex = torch.sum(probabilities * local)
+    local_real = torch.zeros(
+        system.hilbert.size,
+        dtype=state.amplitudes.real.dtype,
+        device=state.amplitudes.device,
+    )
+    local_imag = torch.zeros_like(local_real)
+    local_real.index_add_(0, connections.sample_indices, terms_real)
+    local_imag.index_add_(0, connections.sample_indices, terms_imag)
+    local = torch.complex(local_real, local_imag)
+    probabilities = state.probabilities.to(local_real.dtype)
+    energy_complex = torch.complex(
+        torch.sum(probabilities * local_real),
+        torch.sum(probabilities * local_imag),
+    )
     energy = energy_complex.real
-    variance_raw = torch.sum(probabilities * torch.abs(local) ** 2) - torch.abs(energy_complex) ** 2
+    variance_raw = (
+        torch.sum(probabilities * (local_real.square() + local_imag.square()))
+        - torch.abs(energy_complex) ** 2
+    )
     variance = torch.where(variance_raw >= 0, variance_raw, torch.zeros_like(variance_raw))
     return EnergyEstimate(energy, variance, local, energy_complex.imag.abs())
 
@@ -103,14 +128,27 @@ def local_energies(
     )
     base = model.log_psi(configurations)
     connected = model.log_psi(connections.states)
-    terms = connections.matrix_elements * torch.exp(
-        connected - base[connections.sample_indices]
+    # MUSA does not provide a ComplexFloat exp kernel. Compute
+    # exp(a+ib) and the following complex multiplication with real kernels.
+    delta = connected - base[connections.sample_indices]
+    magnitude = torch.exp(delta.real)
+    exponential_real = magnitude * torch.cos(delta.imag)
+    exponential_imag = magnitude * torch.sin(delta.imag)
+    matrix_real = connections.matrix_elements.real
+    matrix_imag = connections.matrix_elements.imag
+    terms_real = (
+        matrix_real * exponential_real - matrix_imag * exponential_imag
     )
-    result = torch.zeros(
-        configurations.shape[0], dtype=parameter.dtype, device=parameter.device
+    terms_imag = (
+        matrix_real * exponential_imag + matrix_imag * exponential_real
     )
-    result.index_add_(0, connections.sample_indices, terms)
-    return result
+    result_real = torch.zeros(
+        configurations.shape[0], dtype=parameter.real.dtype, device=parameter.device
+    )
+    result_imag = torch.zeros_like(result_real)
+    result_real.index_add_(0, connections.sample_indices, terms_real)
+    result_imag.index_add_(0, connections.sample_indices, terms_imag)
+    return torch.complex(result_real, result_imag)
 
 
 def sample_weights(sample: SampleBatch, model: NeuralQuantumState) -> torch.Tensor:
@@ -134,8 +172,13 @@ def sampled_energy(
 ) -> SampledEnergy:
     weights = sample_weights(sample, model)
     local = local_energies(model, system, sample.configurations)
-    energy = torch.sum(weights * local)
-    variance = torch.sum(weights * torch.abs(local - energy) ** 2).real
+    # MUSA also lacks ComplexFloat reductions, so reduce both components
+    # independently and reconstruct the scalar afterward.
+    energy = torch.complex(
+        torch.sum(weights * local.real),
+        torch.sum(weights * local.imag),
+    )
+    variance = torch.sum(weights * torch.abs(local - energy) ** 2)
     return SampledEnergy(
         sample.configurations,
         weights,

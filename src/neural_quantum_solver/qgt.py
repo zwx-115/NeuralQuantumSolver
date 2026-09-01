@@ -25,7 +25,11 @@ def quantum_geometric_tensor(
 ) -> torch.Tensor:
     """Compute S_ij=<O_i* O_j>-<O_i*><O_j>."""
     probabilities = probabilities / probabilities.sum()
-    mean = torch.sum(probabilities[:, None] * log_derivatives, dim=0)
+    weighted = probabilities[:, None] * log_derivatives
+    mean = torch.complex(
+        torch.sum(weighted.real, dim=0),
+        torch.sum(weighted.imag, dim=0),
+    )
     centered = log_derivatives - mean
     return (centered.conj().mT * probabilities) @ centered
 

@@ -34,7 +34,7 @@ from neural_quantum_solver.estimators import exact_energy  # noqa: E402
 # ---------------------------------------------------------------------------
 # Device settings: these are the only two lines needed when changing hardware.
 # ---------------------------------------------------------------------------
-DEVICE = "cuda:0"  # NVIDIA: "cuda:0"; Moore Threads: "musa"
+DEVICE = "musa:0"  # NVIDIA: "cuda:0"; Moore Threads: "musa"
 NUM_GPUS = 1       # 1, 2, 4, ...; uses consecutive cards from DEVICE
 
 
@@ -48,13 +48,14 @@ PERIODIC = False
 # Shared run settings. complex64 is the portable GPU default; complex128 can be
 # selected when the installed CUDA/MUSA PyTorch build supports it efficiently.
 DTYPE = torch.complex64
-SEED = 7
+SEED = 666
 OPTIMIZATION_STEPS = 100
 REPORT_EVERY = 10
 RUN_NAME = f"sr_{DEVICE.replace(':', '')}_{NUM_GPUS}gpu"
 BENCHMARK_DIR = PROJECT_ROOT / "benchmark_results"
 HISTORY_PATH = BENCHMARK_DIR / f"{RUN_NAME}_steps.csv"
 METADATA_PATH = BENCHMARK_DIR / f"{RUN_NAME}_metadata.json"
+ALPHA_NUM = 5
 
 SCRIPT_STARTED = perf_counter()
 
@@ -70,7 +71,7 @@ system = tilted_field_ising(
 # Select one model. The two commented alternatives use the same state/driver.
 model = ComplexRBM(
     num_visible=NUM_SITES,
-    num_hidden=4 * NUM_SITES,
+    num_hidden= ALPHA_NUM* NUM_SITES,
     dtype=DTYPE,
     device=DEVICE,
     seed=SEED,
@@ -82,7 +83,7 @@ model = ComplexRBM(
 # Select one sampler. The total retained MC samples remain
 # num_chains * sweeps, independent of NUM_GPUS.
 sampler = MetropolisSampler(
-    num_chains=10_000,
+    num_chains=10000,
     thermal_sweeps=20,
     sweeps=1,
     sweep_size=None,
@@ -103,7 +104,7 @@ optimizer = SR(
     learning_rate=0.05,
     regularization=1e-3,
     rcond=1e-12,
-    jacobian=LogJacobian(method="vmap", chunk_size=1_000),
+    jacobian=LogJacobian(method="analytic"),
     solver_device="auto",
 )
 # optimizer = Adam(learning_rate=0.001)

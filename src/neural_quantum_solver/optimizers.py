@@ -284,13 +284,20 @@ class SR(GroundStateOptimizer):
             jacobian_seconds = perf_counter() - jacobian_started
             qgt_started = perf_counter()
             qgt = quantum_geometric_tensor(derivatives, statistics.weights)
-            mean = torch.sum(statistics.weights[:, None] * derivatives, dim=0)
+            weighted_derivatives = statistics.weights[:, None] * derivatives
+            mean = torch.complex(
+                torch.sum(weighted_derivatives.real, dim=0),
+                torch.sum(weighted_derivatives.imag, dim=0),
+            )
             centered = derivatives - mean
-            force = torch.sum(
+            force_terms = (
                 statistics.weights[:, None]
                 * centered.conj()
-                * (statistics.local_energies - statistics.energy).detach()[:, None],
-                dim=0,
+                * (statistics.local_energies - statistics.energy).detach()[:, None]
+            )
+            force = torch.complex(
+                torch.sum(force_terms.real, dim=0),
+                torch.sum(force_terms.imag, dim=0),
             )
             synchronize_devices((device,))
             qgt_force_seconds = perf_counter() - qgt_started

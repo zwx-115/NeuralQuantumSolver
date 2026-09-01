@@ -48,7 +48,47 @@ class ComplexRBM(NeuralQuantumState):
         # kernel. A one-column matrix uses the mathematically identical mm path
         # on both CUDA and MUSA and preserves autograd.
         visible = (x @ self.visible_bias[:, None]).squeeze(-1)
-        return visible + torch.log(2 * torch.cosh(theta)).sum(dim=-1)
+        # MUSA also lacks complex cosh/log kernels. Evaluate
+        # log(2*cosh(a+ib)) using equivalent real-valued operations:
+        # cosh(a+ib) = cosh(a)cos(b) + i*sinh(a)sin(b).
+        theta_real, theta_imag = theta.real, theta.imag
+        cosh_real = torch.cosh(theta_real) * torch.cos(theta_imag)
+        cosh_imag = torch.sinh(theta_real) * torch.sin(theta_imag)
+        log_cosh_real = (
+            torch.log(torch.tensor(2.0, dtype=theta_real.dtype, device=theta.device))
+            + 0.5 * torch.log(cosh_real.square() + cosh_imag.square())
+        )
+        log_cosh_imag = torch.atan2(cosh_imag, cosh_real)
+        return torch.complex(
+            visible.real + log_cosh_real.sum(dim=-1),
+            visible.imag + log_cosh_imag.sum(dim=-1),
+        )
+
+    def log_derivatives(self, configurations: torch.Tensor) -> torch.Tensor:
+        """Return the analytic log-Jacobian without complex autograd kernels."""
+        x = configurations.to(
+            dtype=self.weight.real.dtype, device=self.weight.device
+        )
+        theta = (
+            x.to(self.weight.dtype) @ self.weight.mT + self.hidden_bias
+        )
+        denominator = torch.cosh(2 * theta.real) + torch.cos(2 * theta.imag)
+        tanh_real = torch.sinh(2 * theta.real) / denominator
+        tanh_imag = torch.sin(2 * theta.imag) / denominator
+        visible_derivatives = torch.complex(x, torch.zeros_like(x))
+        hidden_derivatives = torch.complex(tanh_real, tanh_imag)
+        weight_derivatives = torch.complex(
+            tanh_real[:, :, None] * x[:, None, :],
+            tanh_imag[:, :, None] * x[:, None, :],
+        )
+        return torch.cat(
+            (
+                visible_derivatives,
+                hidden_derivatives,
+                weight_derivatives.flatten(start_dim=1),
+            ),
+            dim=1,
+        )
 
 
 class ComplexFNN(NeuralQuantumState):
