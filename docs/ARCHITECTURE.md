@@ -55,6 +55,11 @@ F = < centered(J_amplitude) * centered(E_real)
 
 当前实现不依赖 NCCL/MCCL，也不会把不受支持的 GPU 计算自动转移到 CPU。SR 的稠密线性方程只在主 GPU 上求解；与样本数量相关的 Jacobian、QGT 和力统计可以分布到多卡计算。
 
+NVIDIA 专用基准另提供 `torchrun` 一进程一卡路径。每个进程只持有本地
+CUDA 模型和采样 shard，通过 NCCL `all_reduce` 汇总全局统计量；rank 0
+求解 SR 并广播参数更新，同时独占日志和结果文件写入。该路径与上述
+`DeviceMesh` 可移植路径并存，不改变 MUSA 的 CPU 中转行为。
+
 ## 计时与可移植性
 
 所有 GPU 阶段的计时都会同步每一张已选择的设备。每完成一个优化步骤，就把数据追加到 CSV；JSON 用于保存环境、配置和最终摘要。

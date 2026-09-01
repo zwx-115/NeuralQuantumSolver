@@ -13,7 +13,10 @@ import torch
 from .devices import synchronize_devices
 from .estimators import ShardedSampledEnergy
 from .models import AmplitudePhaseNQS
-from .real_estimators import RealPairShardedSampledEnergy
+from .real_estimators import (
+    DistributedRealPairSampledEnergy,
+    RealPairShardedSampledEnergy,
+)
 from .optimizers import GroundStateOptimizer, OptimizerStep
 from .checkpoint import save_checkpoint
 from .variational import VariationalState
@@ -58,16 +61,23 @@ class GroundStateDriver:
 
     def advance(self) -> GroundStateStep:
         devices = self.state.device_mesh.devices
+        context = self.state.parallel_context
         synchronize_devices(devices)
+        if context is not None:
+            context.barrier()
         step_started = perf_counter()
         sampling_started = perf_counter()
         self.state.sample()
         synchronize_devices(devices)
+        if context is not None:
+            context.barrier()
         sampling_seconds = perf_counter() - sampling_started
 
         energy_started = perf_counter()
         statistics = self.state.expect_energy()
         synchronize_devices(devices)
+        if context is not None:
+            context.barrier()
         energy_seconds = perf_counter() - energy_started
 
         optimization_started = perf_counter()
@@ -75,12 +85,19 @@ class GroundStateDriver:
             self.state.model, statistics
         )
         synchronize_devices(devices)
+        if context is not None:
+            context.barrier()
         optimization_seconds = perf_counter() - optimization_started
         step_seconds = perf_counter() - step_started
         num_samples = (
             statistics.num_samples
             if isinstance(
-                statistics, (ShardedSampledEnergy, RealPairShardedSampledEnergy)
+                statistics,
+                (
+                    ShardedSampledEnergy,
+                    RealPairShardedSampledEnergy,
+                    DistributedRealPairSampledEnergy,
+                ),
             )
             else statistics.configurations.shape[0]
         )
@@ -117,28 +134,44 @@ class GroundStateDriver:
     ) -> GroundStateResult:
         if steps < 1:
             raise ValueError("steps must be positive")
+        context = self.state.parallel_context
+        is_main = context is None or context.is_main
         history: list[GroundStateStep] = []
         best_energy = float("inf")
         best_state: dict[str, torch.Tensor] = {}
-        history_file = Path(history_path) if history_path is not None else None
+        history_file = (
+            Path(history_path)
+            if is_main and history_path is not None
+            else None
+        )
         if history_file is not None:
             history_file.parent.mkdir(parents=True, exist_ok=True)
             with history_file.open("w", newline="", encoding="utf-8") as stream:
                 csv.DictWriter(stream, fieldnames=_HISTORY_FIELDS).writeheader()
-        metadata_file = Path(metadata_path) if metadata_path is not None else None
-        metadata = _run_metadata(self, experiment_label)
+        metadata_file = (
+            Path(metadata_path)
+            if is_main and metadata_path is not None
+            else None
+        )
+        metadata = _run_metadata(self, experiment_label) if is_main else {}
         if run_metadata is not None:
             metadata["run_config"] = run_metadata
         if metadata_file is not None:
             metadata_file.parent.mkdir(parents=True, exist_ok=True)
             _write_json(metadata_file, metadata)
         synchronize_devices(self.state.device_mesh.devices)
+        if context is not None:
+            context.barrier()
         run_started = perf_counter()
         for _ in range(steps):
-            state_before_update = {
-                key: value.detach().cpu().clone()
-                for key, value in self.state.model.state_dict().items()
-            }
+            state_before_update = (
+                {
+                    key: value.detach().cpu().clone()
+                    for key, value in self.state.model.state_dict().items()
+                }
+                if is_main
+                else {}
+            )
             result = self.advance()
             history.append(result)
             if history_file is not None:
@@ -146,15 +179,17 @@ class GroundStateDriver:
             if result.energy < best_energy:
                 best_energy = result.energy
                 best_state = state_before_update
-            if report_every and (
+            if is_main and report_every and (
                 result.step % report_every == 0 or len(history) == steps
             ):
                 print(format_step(result))
             if callback is not None and callback(result, self) is False:
                 break
         synchronize_devices(self.state.device_mesh.devices)
+        if context is not None:
+            context.barrier()
         total_seconds = perf_counter() - run_started
-        if checkpoint_path is not None:
+        if is_main and checkpoint_path is not None:
             path = Path(checkpoint_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             save_checkpoint(
@@ -183,7 +218,8 @@ class GroundStateDriver:
         )
         if metadata_file is not None:
             _write_json(metadata_file, metadata)
-        print(f"total optimization time = {total_seconds:.6f} s")
+        if is_main:
+            print(f"total optimization time = {total_seconds:.6f} s")
         return GroundStateResult(history, best_energy, best_state, total_seconds)
 
 
@@ -252,6 +288,22 @@ def _append_history(path: Path, result: GroundStateStep) -> None:
 
 def _run_metadata(driver: GroundStateDriver, label: str | None) -> dict[str, object]:
     parameter = next(driver.state.model.parameters())
+    context = driver.state.parallel_context
+    if context is not None and context.distributed:
+        devices = tuple(
+            torch.device(f"{context.device.type}:{index}")
+            for index in range(context.world_size)
+        )
+        num_gpus = context.world_size
+        parallel_mode = context.parallel_mode
+        communication_backend = context.backend
+    else:
+        devices = driver.state.device_mesh.devices
+        num_gpus = driver.state.device_mesh.num_devices
+        parallel_mode = "single" if num_gpus == 1 else "local_mesh"
+        communication_backend = (
+            "cpu_staging" if num_gpus > 1 else None
+        )
     return {
         "experiment_label": label,
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -259,10 +311,12 @@ def _run_metadata(driver: GroundStateDriver, label: str | None) -> dict[str, obj
         "torch_version": str(torch.__version__),
         "cuda_runtime_version": getattr(torch.version, "cuda", None),
         "musa_runtime_version": getattr(torch.version, "musa", None),
-        "devices": [str(device) for device in driver.state.device_mesh.devices],
-        "device_details": _device_details(driver.state.device_mesh.devices),
+        "devices": [str(device) for device in devices],
+        "device_details": _device_details(devices),
         "backend": driver.state.device_mesh.backend,
-        "num_gpus": driver.state.device_mesh.num_devices,
+        "num_gpus": num_gpus,
+        "parallel_mode": parallel_mode,
+        "communication_backend": communication_backend,
         "dtype": str(parameter.dtype),
         "model": type(driver.state.model).__name__,
         "representation": (

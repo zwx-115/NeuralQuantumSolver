@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 import torch
 
 from .devices import DeviceMesh, make_generator, run_on_device, transfer_tensor
+from .distributed import ParallelContext
 from .estimators import (
     SampledEnergy,
     ShardedSampledEnergy,
@@ -13,8 +14,10 @@ from .estimators import (
 )
 from .models import AmplitudePhaseNQS, NeuralQuantumState
 from .real_estimators import (
+    DistributedRealPairSampledEnergy,
     RealPairSampledEnergy,
     RealPairShardedSampledEnergy,
+    distributed_real_pair_sampled_energy,
     real_pair_sampled_energy,
     real_pair_sharded_sampled_energy,
 )
@@ -31,12 +34,39 @@ class VariationalState:
     sampler: Sampler = field(default_factory=ExactSampler)
     seed: int = 0
     num_gpus: int = 1
+    parallel_context: ParallelContext | None = None
     _last_sample: SampleBatch | tuple[SampleBatch, ...] | None = field(
         default=None, init=False, repr=False
     )
 
     def __post_init__(self) -> None:
         device = next(self.model.parameters()).device
+        if self.parallel_context is not None and self.parallel_context.distributed:
+            context = self.parallel_context
+            if device != context.device:
+                raise ValueError("model must be located on the local-rank device")
+            if not isinstance(self.model, AmplitudePhaseNQS):
+                raise TypeError(
+                    "NCCL benchmark mode currently requires AmplitudePhaseNQS"
+                )
+            if isinstance(self.sampler, ExactSampler):
+                raise NotImplementedError(
+                    "NCCL benchmark mode currently requires MetropolisSampler"
+                )
+            if not hasattr(self.sampler, "shard"):
+                raise TypeError("distributed sampler must provide shard()")
+            if self.sampler.num_chains < context.world_size:
+                raise ValueError("num_chains must be at least world_size")
+            self.device_mesh = DeviceMesh((device,))
+            self.replicas = (self.model,)
+            self.generators = (
+                make_generator(device, self.seed + context.rank),
+            )
+            self._distributed_sampler = self.sampler.shard(
+                context.world_size, context.rank
+            )
+            context.broadcast_model(self.model)
+            return
         self.device_mesh = DeviceMesh.create(device, self.num_gpus)
         if device != self.device_mesh.primary:
             raise ValueError("model must be located on the first requested device")
@@ -157,6 +187,14 @@ class VariationalState:
         return self._last_sample
 
     def sample(self) -> SampleBatch | tuple[SampleBatch, ...]:
+        if self.parallel_context is not None and self.parallel_context.distributed:
+            self.parallel_context.broadcast_model(self.model)
+            self._last_sample = self._distributed_sampler.sample(
+                self.model,
+                self.system,
+                generator=self.generators[0],
+            )
+            return self._last_sample
         if self.num_gpus == 1:
             self._last_sample = self.sampler.sample(
                 self.model, self.system, generator=self.generators[0]
@@ -174,11 +212,21 @@ class VariationalState:
     ) -> (
         SampledEnergy
         | ShardedSampledEnergy
+        | DistributedRealPairSampledEnergy
         | RealPairSampledEnergy
         | RealPairShardedSampledEnergy
     ):
         sample = self.sample() if resample or self._last_sample is None else self._last_sample
         if isinstance(self.model, AmplitudePhaseNQS):
+            if self.parallel_context is not None and self.parallel_context.distributed:
+                if not isinstance(sample, SampleBatch):
+                    raise RuntimeError("distributed sampling returned multiple shards")
+                return distributed_real_pair_sampled_energy(
+                    self.model,
+                    self.system,
+                    sample,
+                    self.parallel_context,
+                )
             if isinstance(sample, tuple):
                 return real_pair_sharded_sampled_energy(
                     self.replicas, self.system, sample

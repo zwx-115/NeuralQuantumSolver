@@ -15,6 +15,7 @@ from .derivatives import (
 )
 from .estimators import SampledEnergy, ShardedSampledEnergy
 from .real_estimators import (
+    DistributedRealPairSampledEnergy,
     RealPairSampledEnergy,
     RealPairShardedSampledEnergy,
 )
@@ -45,6 +46,7 @@ class GroundStateOptimizer(ABC):
         statistics: (
             SampledEnergy
             | ShardedSampledEnergy
+            | DistributedRealPairSampledEnergy
             | RealPairSampledEnergy
             | RealPairShardedSampledEnergy
         ),
@@ -128,6 +130,7 @@ class Adam(GroundStateOptimizer):
         statistics: (
             SampledEnergy
             | ShardedSampledEnergy
+            | DistributedRealPairSampledEnergy
             | RealPairSampledEnergy
             | RealPairShardedSampledEnergy
         ),
@@ -488,16 +491,132 @@ class SR(GroundStateOptimizer):
         synchronize_devices(devices)
         return qgt, force, jacobian_seconds, perf_counter() - qgt_started
 
+    def _distributed_real_qgt_and_force(
+        self, statistics: DistributedRealPairSampledEnergy
+    ) -> tuple[torch.Tensor, torch.Tensor, float, float]:
+        context = statistics.context
+        device = context.device
+        synchronize_devices((device,))
+        context.barrier()
+        jacobian_started = perf_counter()
+        derivatives = self.jacobian(
+            statistics.model, statistics.shard.configurations
+        )
+        if not isinstance(derivatives, RealLogDerivativeParts):
+            raise TypeError("real-pair SR requires real log-derivative parts")
+        synchronize_devices((device,))
+        context.barrier()
+        jacobian_seconds = perf_counter() - jacobian_started
+
+        qgt_started = perf_counter()
+        weights = statistics.shard.weights
+        amplitude_mean = context.all_reduce(
+            torch.sum(weights[:, None] * derivatives.log_amplitude, dim=0)
+        )
+        phase_mean = context.all_reduce(
+            torch.sum(weights[:, None] * derivatives.phase, dim=0)
+        )
+        second_moment = context.all_reduce(
+            (derivatives.log_amplitude.mT * weights)
+            @ derivatives.log_amplitude
+            + (derivatives.phase.mT * weights) @ derivatives.phase
+        )
+        qgt = second_moment - (
+            amplitude_mean[:, None] * amplitude_mean[None, :]
+            + phase_mean[:, None] * phase_mean[None, :]
+        )
+        amplitude_centered = derivatives.log_amplitude - amplitude_mean
+        phase_centered = derivatives.phase - phase_mean
+        centered_real = (
+            statistics.shard.local_energy_real - statistics.energy
+        ).detach()
+        centered_imag = (
+            statistics.shard.local_energy_imag - statistics.energy_imag
+        ).detach()
+        force = context.all_reduce(
+            torch.sum(
+                weights[:, None]
+                * (
+                    amplitude_centered * centered_real[:, None]
+                    + phase_centered * centered_imag[:, None]
+                ),
+                dim=0,
+            )
+        )
+        synchronize_devices((device,))
+        context.barrier()
+        return qgt, force, jacobian_seconds, perf_counter() - qgt_started
+
+    def _distributed_real_step(
+        self,
+        model: NeuralQuantumState,
+        statistics: DistributedRealPairSampledEnergy,
+    ) -> OptimizerStep:
+        context = statistics.context
+        qgt, force, jacobian_seconds, qgt_force_seconds = (
+            self._distributed_real_qgt_and_force(statistics)
+        )
+        if context.is_main:
+            update, diagnostics = solve_sr(
+                qgt,
+                force,
+                learning_rate=self.learning_rate,
+                regularization=self.regularization,
+                rcond=self.rcond,
+                solver_device=self.solver_device,
+            )
+            scalars = torch.tensor(
+                [
+                    diagnostics.gradient_norm,
+                    diagnostics.update_norm,
+                    diagnostics.fs_step_norm,
+                    float(diagnostics.effective_rank),
+                    diagnostics.condition_number,
+                    diagnostics.solve_seconds,
+                ],
+                dtype=force.dtype,
+                device=context.device,
+            )
+            metrics = _diagnostic_metrics(diagnostics)
+        else:
+            update = torch.zeros_like(force)
+            scalars = torch.zeros(6, dtype=force.dtype, device=context.device)
+            metrics = {}
+        context.broadcast(update)
+        context.broadcast(scalars)
+        apply_flat_update(model, update)
+        metrics.update(
+            {
+                "effective_rank": int(scalars[3].item()),
+                "condition_number": float(scalars[4].item()),
+                "regularization": self.regularization,
+                "fs_step_norm": float(scalars[2].item()),
+                "solve_seconds": float(scalars[5].item()),
+                "jacobian_seconds": jacobian_seconds,
+                "qgt_force_seconds": qgt_force_seconds,
+                "qgt_dimension": qgt.shape[0],
+                "num_devices": context.world_size,
+            }
+        )
+        return OptimizerStep(
+            float(scalars[0].item()),
+            float(scalars[1].item()),
+            metrics,
+        )
+
     def step(
         self,
         model: NeuralQuantumState,
         statistics: (
             SampledEnergy
             | ShardedSampledEnergy
+            | DistributedRealPairSampledEnergy
             | RealPairSampledEnergy
             | RealPairShardedSampledEnergy
         ),
     ) -> OptimizerStep:
+        if isinstance(statistics, DistributedRealPairSampledEnergy):
+            return self._distributed_real_step(model, statistics)
         if isinstance(statistics, RealPairShardedSampledEnergy):
             qgt, force, jacobian_seconds, qgt_force_seconds = (
                 self._sharded_real_qgt_and_force(statistics)

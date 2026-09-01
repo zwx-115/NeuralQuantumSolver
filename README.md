@@ -214,6 +214,27 @@ N_update = num_chains × sweeps × sweep_size
 
 该实现不依赖 NCCL/MCCL，适合在 CUDA 和 MUSA 上使用相同的程序流程进行基准测试。
 
+### NVIDIA NCCL 基准
+
+NVIDIA 专用基准使用一进程一卡和 NCCL 集合通信，入口为
+`examples/ground_state/nvidia_ground_state.py`。单卡直接运行：
+
+```bash
+python examples/ground_state/nvidia_ground_state.py
+```
+
+多卡使用 `torchrun`，进程数即 GPU 数量：
+
+```bash
+torchrun --standalone --nproc_per_node=4 \
+  examples/ground_state/nvidia_ground_state.py
+```
+
+各 rank 平分全局 Metropolis 链，在本地计算能量、Jacobian、QGT 和
+force；NCCL `all_reduce` 汇总充分统计量，rank 0 求解 SR 后广播更新。
+只有 rank 0 写入 CSV/JSON。该路径用于测量 NVIDIA 平台优化后的多卡性能，
+原 `flexible_ground_state.py` 继续提供 MUSA/可移植 CPU 中转路径。
+
 ## 性能记录
 
 基态驱动器可以记录每一步的：

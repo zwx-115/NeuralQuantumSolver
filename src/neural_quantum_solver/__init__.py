@@ -2,6 +2,7 @@
 
 from .exact import EigenResult, ExactDiagonalizer
 from .devices import DeviceMesh, expand_device_names
+from .distributed import ParallelContext
 from .hilbert import SpinHalfHilbert
 from .models import (
     AmplitudePhaseFNN,
@@ -32,7 +33,7 @@ __all__ = [
     "AmplitudePhaseFNN", "AmplitudePhaseNQS", "AmplitudePhaseRBM",
     "AmplitudePhaseTable", "ComplexFNN", "ComplexRBM", "DeviceMesh",
     "EigenResult", "ExactDiagonalizer",
-    "LogAmplitudeTable", "NeuralQuantumState", "PhysicalSystem",
+    "LogAmplitudeTable", "NeuralQuantumState", "ParallelContext", "PhysicalSystem",
     "LogJacobian", "LogJacobianStrategy", "LogPsiParts",
     "RealLogDerivativeParts", "RealRBM",
     "SpinHalfHilbert", "heisenberg", "j1j2_heisenberg",

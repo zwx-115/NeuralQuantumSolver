@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import torch
 
 from .devices import run_on_device, transfer_tensor
+from .distributed import ParallelContext
 from .models import AmplitudePhaseNQS, LogPsiParts
 from .samplers import SampleBatch
 from .systems import PhysicalSystem
@@ -57,6 +58,22 @@ class RealPairShardedSampledEnergy:
     @property
     def num_samples(self) -> int:
         return sum(shard.configurations.shape[0] for shard in self.shards)
+
+
+@dataclass(frozen=True)
+class DistributedRealPairSampledEnergy:
+    """每个进程仅保留本地样本、全局统计量由集合通信得到。"""
+
+    model: AmplitudePhaseNQS
+    shard: RealPairSampledEnergy
+    context: ParallelContext
+    energy: torch.Tensor
+    energy_imag: torch.Tensor
+    variance: torch.Tensor
+    imaginary_residual: torch.Tensor
+    acceptance_rate: float | None
+    exact: bool
+    num_samples: int
 
 
 def real_pair_exact_state(
@@ -178,6 +195,80 @@ def real_pair_sampled_energy(
         torch.abs(energy_imag),
         sample.acceptance_rate,
         sample.exact,
+    )
+
+
+def distributed_real_pair_sampled_energy(
+    model: AmplitudePhaseNQS,
+    system: PhysicalSystem,
+    sample: SampleBatch,
+    context: ParallelContext,
+) -> DistributedRealPairSampledEnergy:
+    if not context.distributed:
+        raise ValueError("distributed sampled energy requires world_size > 1")
+    if sample.exact:
+        raise NotImplementedError(
+            "distributed ExactSampler is not supported by the NVIDIA benchmark"
+        )
+    local_real, local_imag = real_pair_local_energies(
+        model, system, sample.configurations
+    )
+    device = next(model.parameters()).device
+    local_count = torch.tensor(
+        sample.configurations.shape[0], dtype=torch.int64, device=device
+    )
+    total_count = context.all_reduce(local_count.clone())
+    num_samples = int(total_count.item())
+    weights = torch.full(
+        (sample.configurations.shape[0],),
+        1.0 / num_samples,
+        dtype=next(model.parameters()).dtype,
+        device=device,
+    )
+    energy = context.all_reduce(torch.sum(weights * local_real))
+    energy_imag = context.all_reduce(torch.sum(weights * local_imag))
+    variance = context.all_reduce(
+        torch.sum(
+            weights
+            * (
+                (local_real - energy).square()
+                + (local_imag - energy_imag).square()
+            )
+        )
+    )
+    if sample.accepted is not None and sample.proposed is not None:
+        counts = torch.tensor(
+            [int(sample.accepted), sample.proposed],
+            dtype=torch.int64,
+            device=device,
+        )
+        context.all_reduce(counts)
+        acceptance_rate = float(counts[0].item() / counts[1].item())
+    else:
+        acceptance_rate = sample.acceptance_rate
+    shard = RealPairSampledEnergy(
+        sample.configurations,
+        weights,
+        local_real,
+        local_imag,
+        energy,
+        energy_imag,
+        variance,
+        torch.abs(energy_imag),
+        acceptance_rate,
+        False,
+    )
+    return DistributedRealPairSampledEnergy(
+        model,
+        shard,
+        context,
+        energy,
+        energy_imag,
+        variance,
+        torch.abs(energy_imag),
+        acceptance_rate,
+        False,
+        num_samples,
     )
 
 
