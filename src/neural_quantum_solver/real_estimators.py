@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import torch
 
+from .devices import run_on_device, transfer_tensor
 from .models import AmplitudePhaseNQS, LogPsiParts
 from .samplers import SampleBatch
 from .systems import PhysicalSystem
@@ -190,15 +190,22 @@ def real_pair_sharded_sampled_energy(
         raise ValueError("models and samples must contain equally many shards")
     if len({sample.exact for sample in samples}) != 1:
         raise ValueError("sample shards disagree on exact/Monte Carlo mode")
-    with ThreadPoolExecutor(max_workers=len(models)) as executor:
-        local_values = tuple(
-            executor.map(
-                lambda pair: real_pair_local_energies(
-                    pair[0], system, pair[1].configurations
-                ),
-                zip(models, samples),
-            )
+
+    def evaluate_local_energy(pair):
+        model, sample = pair
+        device = next(model.parameters()).device
+        return run_on_device(
+            device,
+            real_pair_local_energies,
+            model,
+            system,
+            sample.configurations,
         )
+
+    local_values = tuple(
+        evaluate_local_energy(pair)
+        for pair in zip(models, samples)
+    )
     primary = next(models[0].parameters()).device
     if samples[0].exact:
         if any(sample.weights is None for sample in samples):
@@ -217,27 +224,36 @@ def real_pair_sharded_sampled_energy(
         )
     energy = sum(
         (
-            torch.sum(weights * local[0]).to(primary)
+            transfer_tensor(torch.sum(weights * local[0]), primary)
             for weights, local in zip(local_weights, local_values)
         ),
         torch.zeros((), dtype=local_values[0][0].dtype, device=primary),
     )
     energy_imag = sum(
         (
-            torch.sum(weights * local[1]).to(primary)
+            transfer_tensor(torch.sum(weights * local[1]), primary)
             for weights, local in zip(local_weights, local_values)
         ),
         torch.zeros((), dtype=local_values[0][1].dtype, device=primary),
     )
     variance = sum(
         (
-            torch.sum(
-                weights
-                * (
-                    (local[0] - energy.to(local[0].device)).square()
-                    + (local[1] - energy_imag.to(local[1].device)).square()
-                )
-            ).to(primary)
+            transfer_tensor(
+                torch.sum(
+                    weights
+                    * (
+                        (
+                            local[0]
+                            - transfer_tensor(energy, local[0].device)
+                        ).square()
+                        + (
+                            local[1]
+                            - transfer_tensor(energy_imag, local[1].device)
+                        ).square()
+                    )
+                ),
+                primary,
+            )
             for weights, local in zip(local_weights, local_values)
         ),
         torch.zeros((), dtype=energy.dtype, device=primary),
@@ -248,10 +264,10 @@ def real_pair_sharded_sampled_energy(
             weights,
             local[0],
             local[1],
-            energy.to(local[0].device),
-            energy_imag.to(local[0].device),
-            variance.to(local[0].device),
-            torch.abs(energy_imag).to(local[0].device),
+            transfer_tensor(energy, local[0].device),
+            transfer_tensor(energy_imag, local[0].device),
+            transfer_tensor(variance, local[0].device),
+            transfer_tensor(torch.abs(energy_imag), local[0].device),
             sample.acceptance_rate,
             sample.exact,
         )

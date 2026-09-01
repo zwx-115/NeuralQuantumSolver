@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TypeVar
 import torch
 
 
 SUPPORTED_DEVICE_TYPES = frozenset({"cpu", "cuda", "musa"})
+T = TypeVar("T")
 
 
 def expand_device_names(device: str | torch.device, num_gpus: int) -> tuple[str, ...]:
@@ -80,6 +83,30 @@ def make_generator(device: torch.device, seed: int) -> torch.Generator:
     generator = torch.Generator(device=device)
     generator.manual_seed(seed)
     return generator
+
+
+def run_on_device(
+    device: torch.device,
+    operation: Callable[..., T],
+    *args,
+    **kwargs,
+) -> T:
+    """在线程内显式激活目标加速器后执行操作。"""
+    if device.type == "cpu":
+        return operation(*args, **kwargs)
+    backend = _backend_module(device.type)
+    with backend.device(device):
+        return operation(*args, **kwargs)
+
+
+def transfer_tensor(tensor: torch.Tensor, target: torch.device) -> torch.Tensor:
+    """跨加速器复制时通过 CPU 暂存，避免依赖设备 P2P 支持。"""
+    target = torch.device(target)
+    if tensor.device == target:
+        return tensor
+    if tensor.device.type != "cpu" and target.type != "cpu":
+        tensor = tensor.to("cpu")
+    return run_on_device(target, tensor.to, target)
 
 
 def synchronize_devices(devices: tuple[torch.device, ...]) -> None:

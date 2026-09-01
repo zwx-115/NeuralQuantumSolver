@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import torch
 
-from .devices import DeviceMesh, make_generator
+from .devices import DeviceMesh, make_generator, run_on_device, transfer_tensor
 from .estimators import (
     SampledEnergy,
     ShardedSampledEnergy,
@@ -48,7 +47,7 @@ class VariationalState:
             if self.sampler.num_chains < self.num_gpus:
                 raise ValueError("num_chains must be at least num_gpus")
         self.replicas = (self.model,) + tuple(
-            deepcopy(self.model).to(replica_device)
+            deepcopy(self.model).cpu().to(replica_device)
             for replica_device in self.device_mesh.devices[1:]
         )
         self.generators = tuple(
@@ -57,7 +56,10 @@ class VariationalState:
         )
 
     def _sync_replicas(self) -> None:
-        state_dict = self.model.state_dict()
+        state_dict = {
+            name: value.detach().cpu()
+            for name, value in self.model.state_dict().items()
+        }
         for replica in self.replicas[1:]:
             replica.load_state_dict(state_dict)
 
@@ -72,36 +74,41 @@ class VariationalState:
         )
         def evaluate(pair):
             model, shard = pair
-            with torch.no_grad():
-                if isinstance(model, AmplitudePhaseNQS):
-                    return model.log_amplitude(shard)
-                return model.log_psi(shard).real
+            device = next(model.parameters()).device
 
-        with ThreadPoolExecutor(max_workers=self.num_gpus) as executor:
-            log_amplitudes = tuple(
-                executor.map(
-                    evaluate,
-                    zip(self.replicas, configuration_shards),
+            def evaluate_on_device():
+                with torch.no_grad():
+                    if isinstance(model, AmplitudePhaseNQS):
+                        return model.log_amplitude(shard)
+                    return model.log_psi(shard).real
+
+            return run_on_device(device, evaluate_on_device)
+
+        log_amplitudes = tuple(
+            evaluate(pair)
+            for pair in zip(self.replicas, configuration_shards)
+        )
+        local_log_norms = torch.stack(
+            [
+                transfer_tensor(
+                    torch.logsumexp(2 * values, dim=0),
+                    self.device_mesh.primary,
                 )
+                for values in log_amplitudes
+            ]
+        )
+        log_norm = torch.logsumexp(local_log_norms, dim=0)
+        return tuple(
+            SampleBatch(
+                shard,
+                torch.exp(
+                    2 * values - transfer_tensor(log_norm, values.device)
+                ),
+                None,
+                True,
             )
-            local_log_norms = torch.stack(
-                [
-                    torch.logsumexp(2 * values, dim=0).to(
-                        self.device_mesh.primary
-                    )
-                    for values in log_amplitudes
-                ]
-            )
-            log_norm = torch.logsumexp(local_log_norms, dim=0)
-            return tuple(
-                SampleBatch(
-                    shard,
-                    torch.exp(2 * values - log_norm.to(values.device)),
-                    None,
-                    True,
-                )
-                for shard, values in zip(configuration_shards, log_amplitudes)
-            )
+            for shard, values in zip(configuration_shards, log_amplitudes)
+        )
 
     def _metropolis_sample_shards(self) -> tuple[SampleBatch, ...]:
         if not hasattr(self.sampler, "shard"):
@@ -112,15 +119,36 @@ class VariationalState:
             self.sampler.shard(self.num_gpus, index)
             for index in range(self.num_gpus)
         )
-        with ThreadPoolExecutor(max_workers=self.num_gpus) as executor:
-            return tuple(
-                executor.map(
-                    lambda values: values[0].sample(
-                        values[1], self.system, generator=values[2]
-                    ),
-                    zip(samplers, self.replicas, self.generators),
+
+        def sample_shard(values):
+            sampler, model, generator = values
+            device = next(model.parameters()).device
+            return run_on_device(
+                device,
+                sampler.sample,
+                model,
+                self.system,
+                generator=generator,
+                defer_scalar_results=True,
+            )
+
+        batches = tuple(
+            sample_shard(values)
+            for values in zip(samplers, self.replicas, self.generators)
+        )
+        normalized = []
+        for batch in batches:
+            if batch.accepted is None or batch.proposed is None:
+                raise RuntimeError("Metropolis shard did not report acceptance counts")
+            accepted = int(batch.accepted)
+            normalized.append(
+                replace(
+                    batch,
+                    acceptance_rate=accepted / batch.proposed,
+                    accepted=accepted,
                 )
             )
+        return tuple(normalized)
 
     @property
     def samples(self) -> SampleBatch | tuple[SampleBatch, ...]:

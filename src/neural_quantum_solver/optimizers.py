@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import math
 from time import perf_counter
@@ -19,7 +18,7 @@ from .real_estimators import (
     RealPairSampledEnergy,
     RealPairShardedSampledEnergy,
 )
-from .devices import synchronize_devices
+from .devices import run_on_device, synchronize_devices, transfer_tensor
 from .models import NeuralQuantumState
 from .qgt import (
     QGTDiagnostics,
@@ -152,17 +151,25 @@ class Adam(GroundStateOptimizer):
                 raise ValueError("the first statistics replica must be the primary model")
             for replica in statistics.models[1:]:
                 replica.zero_grad(set_to_none=True)
-            with ThreadPoolExecutor(max_workers=len(statistics.models)) as executor:
-                tuple(
-                    executor.map(
-                        lambda pair: (
-                            self._backward_real_shard(pair[0], pair[1])
-                            if isinstance(pair[1], RealPairSampledEnergy)
-                            else self._backward_shard(pair[0], pair[1])
-                        ),
-                        zip(statistics.models, statistics.shards),
-                    )
+
+            def backward_shard(pair):
+                replica, shard = pair
+                operation = (
+                    self._backward_real_shard
+                    if isinstance(shard, RealPairSampledEnergy)
+                    else self._backward_shard
                 )
+                return run_on_device(
+                    next(replica.parameters()).device,
+                    operation,
+                    replica,
+                    shard,
+                )
+
+            tuple(
+                backward_shard(pair)
+                for pair in zip(statistics.models, statistics.shards)
+            )
             parameter_groups = zip(
                 *(tuple(replica.parameters()) for replica in statistics.models)
             )
@@ -171,7 +178,9 @@ class Adam(GroundStateOptimizer):
                 for replica_parameter in parameters[1:]:
                     if replica_parameter.grad is None:
                         continue
-                    replica_gradient = replica_parameter.grad.to(primary.device)
+                    replica_gradient = transfer_tensor(
+                        replica_parameter.grad, primary.device
+                    )
                     if primary.grad is None:
                         primary.grad = replica_gradient.clone()
                     else:
@@ -280,13 +289,20 @@ class SR(GroundStateOptimizer):
         devices = tuple(next(model.parameters()).device for model in statistics.models)
         synchronize_devices(devices)
         jacobian_started = perf_counter()
-        with ThreadPoolExecutor(max_workers=len(statistics.models)) as executor:
-            derivatives = tuple(
-                executor.map(
-                    lambda pair: self.jacobian(pair[0], pair[1].configurations),
-                    zip(statistics.models, statistics.shards),
-                )
+
+        def evaluate_jacobian(pair):
+            replica, shard = pair
+            return run_on_device(
+                next(replica.parameters()).device,
+                self.jacobian,
+                replica,
+                shard.configurations,
             )
+
+        derivatives = tuple(
+            evaluate_jacobian(pair)
+            for pair in zip(statistics.models, statistics.shards)
+        )
         synchronize_devices(devices)
         jacobian_seconds = perf_counter() - jacobian_started
         qgt_started = perf_counter()
@@ -299,21 +315,32 @@ class SR(GroundStateOptimizer):
         )
         for values, shard in zip(derivatives, statistics.shards):
             weights = shard.weights
-            mean.add_(torch.sum(weights[:, None] * values, dim=0).to(primary))
+            mean.add_(
+                transfer_tensor(
+                    torch.sum(weights[:, None] * values, dim=0),
+                    primary,
+                )
+            )
             second_moment.add_(
-                ((values.conj().mT * weights) @ values).to(primary)
+                transfer_tensor(
+                    (values.conj().mT * weights) @ values,
+                    primary,
+                )
             )
         qgt = second_moment - mean.conj()[:, None] * mean[None, :]
         force = torch.zeros(parameter_count, dtype=dtype, device=primary)
         for values, shard in zip(derivatives, statistics.shards):
-            centered = values - mean.to(values.device)
+            centered = values - transfer_tensor(mean, values.device)
             force.add_(
-                torch.sum(
-                    shard.weights[:, None]
-                    * centered.conj()
-                    * (shard.local_energies - shard.energy).detach()[:, None],
-                    dim=0,
-                ).to(primary)
+                transfer_tensor(
+                    torch.sum(
+                        shard.weights[:, None]
+                        * centered.conj()
+                        * (shard.local_energies - shard.energy).detach()[:, None],
+                        dim=0,
+                    ),
+                    primary,
+                )
             )
         synchronize_devices(devices)
         qgt_force_seconds = perf_counter() - qgt_started
@@ -371,13 +398,20 @@ class SR(GroundStateOptimizer):
         devices = tuple(next(model.parameters()).device for model in statistics.models)
         synchronize_devices(devices)
         jacobian_started = perf_counter()
-        with ThreadPoolExecutor(max_workers=len(statistics.models)) as executor:
-            derivatives = tuple(
-                executor.map(
-                    lambda pair: self.jacobian(pair[0], pair[1].configurations),
-                    zip(statistics.models, statistics.shards),
-                )
+
+        def evaluate_jacobian(pair):
+            replica, shard = pair
+            return run_on_device(
+                next(replica.parameters()).device,
+                self.jacobian,
+                replica,
+                shard.configurations,
             )
+
+        derivatives = tuple(
+            evaluate_jacobian(pair)
+            for pair in zip(statistics.models, statistics.shards)
+        )
         if any(not isinstance(value, RealLogDerivativeParts) for value in derivatives):
             raise TypeError("real-pair SR requires real log-derivative parts")
         synchronize_devices(devices)
@@ -396,18 +430,25 @@ class SR(GroundStateOptimizer):
         for values, shard in zip(derivatives, statistics.shards):
             weights = shard.weights
             amplitude_mean.add_(
-                torch.sum(weights[:, None] * values.log_amplitude, dim=0).to(
-                    primary
+                transfer_tensor(
+                    torch.sum(
+                        weights[:, None] * values.log_amplitude, dim=0
+                    ),
+                    primary,
                 )
             )
             phase_mean.add_(
-                torch.sum(weights[:, None] * values.phase, dim=0).to(primary)
+                transfer_tensor(
+                    torch.sum(weights[:, None] * values.phase, dim=0),
+                    primary,
+                )
             )
             second_moment.add_(
-                (
+                transfer_tensor(
                     (values.log_amplitude.mT * weights) @ values.log_amplitude
-                    + (values.phase.mT * weights) @ values.phase
-                ).to(primary)
+                    + (values.phase.mT * weights) @ values.phase,
+                    primary,
+                )
             )
         qgt = second_moment - (
             amplitude_mean[:, None] * amplitude_mean[None, :]
@@ -416,9 +457,15 @@ class SR(GroundStateOptimizer):
         force = torch.zeros(parameter_count, dtype=dtype, device=primary)
         for values, shard in zip(derivatives, statistics.shards):
             amplitude_centered = (
-                values.log_amplitude - amplitude_mean.to(values.log_amplitude.device)
+                values.log_amplitude
+                - transfer_tensor(
+                    amplitude_mean, values.log_amplitude.device
+                )
             )
-            phase_centered = values.phase - phase_mean.to(values.phase.device)
+            phase_centered = (
+                values.phase
+                - transfer_tensor(phase_mean, values.phase.device)
+            )
             centered_real = (
                 shard.local_energy_real - shard.energy
             ).detach()
@@ -426,14 +473,17 @@ class SR(GroundStateOptimizer):
                 shard.local_energy_imag - shard.energy_imag
             ).detach()
             force.add_(
-                torch.sum(
-                    shard.weights[:, None]
-                    * (
-                        amplitude_centered * centered_real[:, None]
-                        + phase_centered * centered_imag[:, None]
+                transfer_tensor(
+                    torch.sum(
+                        shard.weights[:, None]
+                        * (
+                            amplitude_centered * centered_real[:, None]
+                            + phase_centered * centered_imag[:, None]
+                        ),
+                        dim=0,
                     ),
-                    dim=0,
-                ).to(primary)
+                    primary,
+                )
             )
         synchronize_devices(devices)
         return qgt, force, jacobian_seconds, perf_counter() - qgt_started

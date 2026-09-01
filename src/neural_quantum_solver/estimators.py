@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor
 import torch
+from .devices import run_on_device, transfer_tensor
 from .models import AmplitudePhaseNQS, NeuralQuantumState
 from .real_estimators import (
     RealPairEnergyEstimate,
@@ -214,13 +214,21 @@ def sharded_sampled_energy(
     if len({sample.exact for sample in samples}) != 1:
         raise ValueError("sample shards disagree on exact/Monte Carlo mode")
 
-    with ThreadPoolExecutor(max_workers=len(models)) as executor:
-        local_values = tuple(
-            executor.map(
-                lambda pair: local_energies(pair[0], system, pair[1].configurations),
-                zip(models, samples),
-            )
+    def evaluate_local_energy(pair):
+        model, sample = pair
+        device = next(model.parameters()).device
+        return run_on_device(
+            device,
+            local_energies,
+            model,
+            system,
+            sample.configurations,
         )
+
+    local_values = tuple(
+        evaluate_local_energy(pair)
+        for pair in zip(models, samples)
+    )
 
     primary = next(models[0].parameters()).device
     if samples[0].exact:
@@ -241,16 +249,23 @@ def sharded_sampled_energy(
 
     energy = sum(
         (
-            torch.sum(weights * local).to(primary)
+            transfer_tensor(torch.sum(weights * local), primary)
             for weights, local in zip(local_weights, local_values)
         ),
         torch.zeros((), dtype=local_values[0].dtype, device=primary),
     )
     variance = sum(
         (
-            torch.sum(
-                weights * torch.abs(local - energy.to(local.device)) ** 2
-            ).real.to(primary)
+            transfer_tensor(
+                torch.sum(
+                    weights
+                    * torch.abs(
+                        local - transfer_tensor(energy, local.device)
+                    )
+                    ** 2
+                ).real,
+                primary,
+            )
             for weights, local in zip(local_weights, local_values)
         ),
         torch.zeros((), dtype=energy.real.dtype, device=primary),
@@ -261,9 +276,9 @@ def sharded_sampled_energy(
             sample.configurations,
             weights,
             local,
-            energy.to(local.device),
-            variance.to(local.device),
-            energy.imag.abs().to(local.device),
+            transfer_tensor(energy, local.device),
+            transfer_tensor(variance, local.device),
+            transfer_tensor(energy.imag.abs(), local.device),
             sample.acceptance_rate,
             sample.exact,
         )

@@ -13,7 +13,7 @@ class SampleBatch:
     weights: torch.Tensor | None
     acceptance_rate: float | None
     exact: bool
-    accepted: int | None = None
+    accepted: int | torch.Tensor | None = None
     proposed: int | None = None
 
 
@@ -102,6 +102,7 @@ class MetropolisSampler:
     def sample(
         self, model: NeuralQuantumState, system: PhysicalSystem, *,
         generator: torch.Generator | None = None,
+        defer_scalar_results: bool = False,
     ) -> SampleBatch:
         device = next(model.parameters()).device
         num_sites = system.hilbert.num_sites
@@ -110,7 +111,8 @@ class MetropolisSampler:
             0, 2, (self.num_chains, num_sites),
             device=device, generator=generator,
         ) - 1
-        accepted = proposed = 0
+        accepted = torch.zeros((), dtype=torch.int64, device=device)
+        proposed = 0
         site_cursor = 0
 
         with torch.no_grad():
@@ -120,7 +122,7 @@ class MetropolisSampler:
                 log_amplitude = model.log_psi(states).real
 
             def advance(num_updates: int, *, measure_acceptance: bool) -> None:
-                nonlocal accepted, proposed, site_cursor, log_amplitude
+                nonlocal accepted, proposed, site_cursor, states, log_amplitude
                 for _ in range(num_updates):
                     site = site_cursor % num_sites
                     site_cursor += 1
@@ -140,10 +142,12 @@ class MetropolisSampler:
                         probability, torch.ones_like(probability)
                     )
                     if measure_acceptance:
-                        accepted += int(take.sum())
+                        accepted += take.sum()
                         proposed += self.num_chains
-                    states[take] = trial[take]
-                    log_amplitude[take] = trial_log_amplitude[take]
+                    states = torch.where(take[:, None], trial, states)
+                    log_amplitude = torch.where(
+                        take, trial_log_amplitude, log_amplitude
+                    )
 
             # 热化阶段仍按传统定义，每次 sweep 执行 num_sites 次更新。
             advance(self.thermal_sweeps * num_sites, measure_acceptance=False)
@@ -156,6 +160,16 @@ class MetropolisSampler:
         configurations = torch.stack(samples, dim=0).reshape(
             self.sweeps * self.num_chains, num_sites
         )
+        if defer_scalar_results:
+            return SampleBatch(
+                configurations, None, None, False, accepted, proposed
+            )
+        accepted_value = int(accepted)
         return SampleBatch(
-            configurations, None, accepted / proposed, False, accepted, proposed
+            configurations,
+            None,
+            accepted_value / proposed,
+            False,
+            accepted_value,
+            proposed,
         )
