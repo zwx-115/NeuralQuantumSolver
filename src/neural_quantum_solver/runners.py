@@ -29,14 +29,19 @@ class GroundStateRunResult:
 class ExactGroundStateRunner:
     """Differentiable full-summation ground-state optimization."""
 
-    def __init__(self, *, learning_rate: float = 1e-2, steps: int = 1000) -> None:
+    def __init__(
+        self, *, learning_rate: float = 1e-2, steps: int = 1000,
+        num_gpus: int = 1,
+    ) -> None:
         if learning_rate <= 0 or steps < 1:
             raise ValueError("learning_rate and steps must be positive")
         self.learning_rate, self.steps = learning_rate, steps
+        self.num_gpus = num_gpus
 
     def run(self, model: NeuralQuantumState, system: PhysicalSystem) -> GroundStateRunResult:
         driver = GroundStateDriver(
-            FullSumState(system, model), Adam(learning_rate=self.learning_rate)
+            FullSumState(system, model, num_gpus=self.num_gpus),
+            Adam(learning_rate=self.learning_rate),
         )
         result = driver.run(self.steps)
         history = [
@@ -46,4 +51,3 @@ class ExactGroundStateRunner:
             for step in result.history
         ]
         return GroundStateRunResult(history, result.best_energy, result.best_state_dict)
-

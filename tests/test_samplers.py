@@ -65,8 +65,16 @@ def test_default_sweep_size_is_number_of_sites():
     assert model.log_psi_calls == 13
 
 
+def test_metropolis_shards_preserve_total_number_of_chains():
+    sampler = MetropolisSampler(11, thermal_sweeps=3, sweeps=4, sweep_size=2)
+    shards = [sampler.shard(3, index) for index in range(3)]
+
+    assert [shard.num_chains for shard in shards] == [4, 4, 3]
+    assert sum(shard.num_chains for shard in shards) == sampler.num_chains
+    assert all(shard.sweeps == sampler.sweeps for shard in shards)
+
+
 @pytest.mark.parametrize("sweep_size", [0, -1, True, 1.5])
 def test_metropolis_rejects_invalid_sweep_size(sweep_size):
     with pytest.raises(ValueError, match="sweep_size"):
         MetropolisSampler(4, sweep_size=sweep_size)
-

@@ -47,11 +47,3 @@ class ExactDiagonalizer:
     def ground_state(self, system: PhysicalSystem) -> EigenResult:
         eigenvalues, eigenvectors = self.diagonalize(system)
         return EigenResult(eigenvalues[0], eigenvectors[:, 0], eigenvalues)
-
-    def evolve(self, system: PhysicalSystem, state: torch.Tensor, time: float) -> torch.Tensor:
-        eigenvalues, eigenvectors = self.diagonalize(system)
-        state = state.to(device=self.device, dtype=self.dtype)
-        if state.shape != (system.hilbert.size,):
-            raise ValueError("statevector has the wrong dimension")
-        coefficients = eigenvectors.mH @ state
-        return eigenvectors @ (torch.exp(-1j * time * eigenvalues) * coefficients)

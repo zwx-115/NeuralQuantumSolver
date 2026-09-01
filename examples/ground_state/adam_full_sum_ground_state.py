@@ -37,8 +37,9 @@ LEARNING_RATE = 0.01
 OPTIMIZATION_STEPS = 300
 REPORT_EVERY = 10
 
-DTYPE = torch.complex128
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DTYPE = torch.complex64
+DEVICE = "cuda:0"  # NVIDIA: "cuda:0"; Moore Threads: "musa"
+NUM_GPUS = 1
 SEED = 7
 
 
@@ -65,6 +66,7 @@ variational_state = FullSumState(
     system=system,
     model=model,
     seed=SEED,
+    num_gpus=NUM_GPUS,
 )
 
 optimizer = Adam(
@@ -72,6 +74,7 @@ optimizer = Adam(
 )
 
 print(f"device                 = {DEVICE}")
+print(f"number of GPUs         = {NUM_GPUS}")
 print(f"Hilbert-space size     = {system.hilbert.size}")
 print("sampling               = exact full summation")
 
@@ -83,11 +86,10 @@ result = GroundStateDriver(variational_state, optimizer).run(
 
 # Both quantities below are noise-free. The first is the exact eigenvalue; the
 # second is the exact energy expectation of the final NQS wavefunction.
-exact = ExactDiagonalizer(dtype=DTYPE, device=DEVICE).ground_state(system)
+exact = ExactDiagonalizer(dtype=torch.complex128, device="cpu").ground_state(system)
 final_nqs_energy = exact_energy(model, system).energy.item()
 
 print(f"exact ground energy    = {exact.energy.item():.12f}")
 print(f"best NQS energy        = {result.best_energy:.12f}")
 print(f"final NQS energy       = {final_nqs_energy:.12f}")
 print(f"final energy error     = {final_nqs_energy - exact.energy.item():.3e}")
-

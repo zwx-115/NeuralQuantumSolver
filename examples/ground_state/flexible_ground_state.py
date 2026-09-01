@@ -1,12 +1,13 @@
-"""Composable ground-state example, following a NetKet-like object workflow."""
+"""Configurable CUDA/MUSA ground-state calculation."""
 
 from pathlib import Path
+from statistics import mean, median
 import sys
+from time import perf_counter
 
 import torch
 
 
-# Allow this example to run directly without `pip install -e .`.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = PROJECT_ROOT / "src"
 if str(SOURCE_ROOT) not in sys.path:
@@ -14,84 +15,146 @@ if str(SOURCE_ROOT) not in sys.path:
 
 from neural_quantum_solver import (  # noqa: E402
     Adam,
+    ComplexFNN,
     ComplexRBM,
-    ExactSampler,
     ExactDiagonalizer,
+    ExactSampler,
     GroundStateDriver,
+    LogAmplitudeTable,
     LogJacobian,
     MetropolisSampler,
     SR,
     VariationalState,
     tilted_field_ising,
+    update_run_metadata,
 )
 from neural_quantum_solver.estimators import exact_energy  # noqa: E402
 
 
-# 1. Define one physical system shared by ED and NQS.
+# ---------------------------------------------------------------------------
+# Device settings: these are the only two lines needed when changing hardware.
+# ---------------------------------------------------------------------------
+DEVICE = "cuda:0"  # NVIDIA: "cuda:0"; Moore Threads: "musa"
+NUM_GPUS = 1       # 1, 2, 4, ...; uses consecutive cards from DEVICE
+
+
+# Physical-system settings.
+NUM_SITES = 10
+COUPLING = 1.0
+FIELD_X = 0.5
+FIELD_Z = 0.5
+PERIODIC = False
+
+# Shared run settings. complex64 is the portable GPU default; complex128 can be
+# selected when the installed CUDA/MUSA PyTorch build supports it efficiently.
+DTYPE = torch.complex64
+SEED = 7
+OPTIMIZATION_STEPS = 100
+REPORT_EVERY = 10
+RUN_NAME = f"sr_{DEVICE.replace(':', '')}_{NUM_GPUS}gpu"
+BENCHMARK_DIR = PROJECT_ROOT / "benchmark_results"
+HISTORY_PATH = BENCHMARK_DIR / f"{RUN_NAME}_steps.csv"
+METADATA_PATH = BENCHMARK_DIR / f"{RUN_NAME}_metadata.json"
+
+SCRIPT_STARTED = perf_counter()
+
+
 system = tilted_field_ising(
-    num_sites=10,
-    coupling=1.0,
-    field_x=0.5,
-    field_z=0.5,
-    periodic=False,
+    num_sites=NUM_SITES,
+    coupling=COUPLING,
+    field_x=FIELD_X,
+    field_z=FIELD_Z,
+    periodic=PERIODIC,
 )
 
-# 2. Select any model implementing log_psi(configurations).
+# Select one model. The two commented alternatives use the same state/driver.
 model = ComplexRBM(
-    num_visible=system.hilbert.num_sites,
-    num_hidden=4 * system.hilbert.num_sites,
-    dtype=torch.complex128,
-    device="cuda",
-    seed=7,
+    num_visible=NUM_SITES,
+    num_hidden=4 * NUM_SITES,
+    dtype=DTYPE,
+    device=DEVICE,
+    seed=SEED,
 )
+# model = ComplexFNN([NUM_SITES, 4 * NUM_SITES, 1], dtype=DTYPE,
+#                    device=DEVICE, seed=SEED)
+# model = LogAmplitudeTable(NUM_SITES, dtype=DTYPE, device=DEVICE)
 
-# 3. Sampling is independent of the model, optimizer, and driver.
+# Select one sampler. The total retained MC samples remain
+# num_chains * sweeps, independent of NUM_GPUS.
 sampler = MetropolisSampler(
-    num_chains=10000,
+    num_chains=10_000,
     thermal_sweeps=20,
-    sweeps=1,       # Retained samples per chain; total = num_chains * sweeps.
-    sweep_size=None,  # None means num_sites local updates between saved samples.
+    sweeps=1,
+    sweep_size=None,
 )
-
-# For deterministic full-Hilbert-space summation, replace the line above with:
 # sampler = ExactSampler()
 
-variational_state = VariationalState(
+state = VariationalState(
     system=system,
     model=model,
     sampler=sampler,
-    seed=7,
+    seed=SEED,
+    num_gpus=NUM_GPUS,
 )
 
-# 4. Optimization is independent of the sampler and model architecture.
-# The per-sample log-Jacobian is an SR-only dependency; Adam does not use it.
-jacobian = LogJacobian(
-    method="vmap",
-    chunk_size=1000,
-)
-
+# Select one optimizer. LogJacobian belongs only to SR and is never evaluated
+# by Adam. solver_device="auto" solves on the primary CUDA or MUSA GPU.
 optimizer = SR(
     learning_rate=0.05,
     regularization=1e-3,
     rcond=1e-12,
-    jacobian=jacobian,
+    jacobian=LogJacobian(method="vmap", chunk_size=1_000),
+    solver_device="auto",
 )
+# optimizer = Adam(learning_rate=0.001)
 
-# To use Adam instead, replace the optimizer above with:
-# optimizer = Adam(learning_rate=0.01)
+print(f"primary device          = {DEVICE}")
+print(f"number of GPUs          = {NUM_GPUS}")
+print(f"model                    = {type(model).__name__}")
+print(f"sampler                  = {type(sampler).__name__}")
+print(f"optimizer                = {type(optimizer).__name__}")
 
-# 5. The driver only orchestrates the variational state and optimizer.
-driver = GroundStateDriver(variational_state, optimizer)
-result = driver.run(
-    steps=100,
-    report_every=10,
+result = GroundStateDriver(state, optimizer).run(
+    steps=OPTIMIZATION_STEPS,
+    report_every=REPORT_EVERY,
     checkpoint_path=PROJECT_ROOT / "checkpoints" / "ground_state.pt",
+    history_path=HISTORY_PATH,
+    metadata_path=METADATA_PATH,
+    experiment_label=RUN_NAME,
+    run_metadata={
+        "coupling": COUPLING,
+        "field_x": FIELD_X,
+        "field_z": FIELD_Z,
+        "periodic": PERIODIC,
+        "optimization_steps": OPTIMIZATION_STEPS,
+    },
 )
 
-# ED consumes exactly the same PhysicalSystem and is an independent reference.
-exact = ExactDiagonalizer(dtype=torch.complex128).ground_state(system)
+# The NQS full-sum evaluation remains on DEVICE, so backend failures are visible
+# instead of being hidden by a CPU fallback. Dense ED is an independent CPU
+# complex128 reference and does not participate in NQS optimization.
+exact = ExactDiagonalizer(dtype=torch.complex128, device="cpu").ground_state(system)
 final_full_sum_energy = exact_energy(model, system).energy.item()
-print(f"exact ground energy = {exact.energy.item():.12f}")
-print(f"best sampled energy = {result.best_energy:.12f}")
-print(f"final NQS full sum  = {final_full_sum_energy:.12f}")
-print(f"full-sum error      = {final_full_sum_energy - exact.energy.item():.3e}")
+steady_steps = result.history[1:] or result.history
+solve_times = [
+    step.optimizer_metrics["solve_seconds"]
+    for step in steady_steps
+    if "solve_seconds" in step.optimizer_metrics
+]
+update_run_metadata(
+    METADATA_PATH,
+    exact_ground_energy=exact.energy.item(),
+    final_nqs_full_sum_energy=final_full_sum_energy,
+    final_energy_error=final_full_sum_energy - exact.energy.item(),
+    mean_steady_step_seconds=mean(step.step_seconds for step in steady_steps),
+    median_steady_step_seconds=median(step.step_seconds for step in steady_steps),
+    mean_steady_solve_seconds=mean(solve_times) if solve_times else None,
+    end_to_end_seconds=perf_counter() - SCRIPT_STARTED,
+)
+
+print(f"exact ground energy      = {exact.energy.item():.12f}")
+print(f"best sampled energy      = {result.best_energy:.12f}")
+print(f"final NQS full sum       = {final_full_sum_energy:.12f}")
+print(f"full-sum error           = {final_full_sum_energy - exact.energy.item():.3e}")
+print(f"step history             = {HISTORY_PATH}")
+print(f"run metadata             = {METADATA_PATH}")

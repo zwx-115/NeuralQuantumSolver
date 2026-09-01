@@ -16,10 +16,13 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer | None = None,
     step: int = 0,
 ) -> None:
+    model_state = {
+        key: value.detach().cpu() for key, value in model.state_dict().items()
+    }
     torch.save(
         {
             "format_version": 1,
-            "model_state_dict": model.state_dict(),
+            "model_state_dict": model_state,
             "model_config": model_config,
             "run_config": run_config,
             "optimizer_state_dict": optimizer.state_dict() if optimizer else None,

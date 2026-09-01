@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
 import torch
+
+from .devices import synchronize_devices
 
 
 @dataclass(frozen=True)
@@ -14,6 +17,7 @@ class QGTDiagnostics:
     gradient_norm: float
     update_norm: float
     fs_step_norm: float
+    solve_seconds: float
 
 
 def quantum_geometric_tensor(
@@ -29,9 +33,23 @@ def quantum_geometric_tensor(
 def solve_sr(
     qgt: torch.Tensor, force: torch.Tensor, *, learning_rate: float,
     regularization: float, rcond: float = 1e-12,
+    solver_device: torch.device | str | None = "auto",
 ) -> tuple[torch.Tensor, QGTDiagnostics]:
+    original_device = qgt.device
+    if solver_device == "auto":
+        work_device = qgt.device
+    elif solver_device is None:
+        work_device = qgt.device
+    else:
+        work_device = torch.device(solver_device)
+    qgt = qgt.to(work_device)
+    force = force.to(work_device)
     shifted = qgt + regularization * torch.eye(qgt.shape[0], dtype=qgt.dtype, device=qgt.device)
-    update = -learning_rate * (torch.linalg.pinv(shifted, rtol=rcond) @ force)
+    synchronize_devices((work_device,))
+    solve_started = perf_counter()
+    update = torch.linalg.solve(shifted, -learning_rate * force)
+    synchronize_devices((work_device,))
+    solve_seconds = perf_counter() - solve_started
     eigenvalues = torch.linalg.eigvalsh(qgt).real
     singular_values = torch.linalg.svdvals(qgt).real
     threshold = rcond * singular_values.max()
@@ -42,5 +60,6 @@ def solve_sr(
         eigenvalues, singular_values, int(kept.numel()), condition, regularization,
         float(torch.linalg.vector_norm(force).item()),
         float(torch.linalg.vector_norm(update).item()), float(torch.sqrt(fs_squared).item()),
+        solve_seconds,
     )
-    return update, diagnostics
+    return update.to(original_device), diagnostics

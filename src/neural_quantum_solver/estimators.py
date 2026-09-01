@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 import torch
 from .models import NeuralQuantumState
 from .samplers import SampleBatch
@@ -34,6 +35,23 @@ class SampledEnergy:
     imaginary_residual: torch.Tensor
     acceptance_rate: float | None
     exact: bool
+
+
+@dataclass(frozen=True)
+class ShardedSampledEnergy:
+    """Global statistics plus device-local shards for data-parallel updates."""
+
+    models: tuple[NeuralQuantumState, ...]
+    shards: tuple[SampledEnergy, ...]
+    energy: torch.Tensor
+    variance: torch.Tensor
+    imaginary_residual: torch.Tensor
+    acceptance_rate: float | None
+    exact: bool
+
+    @property
+    def num_samples(self) -> int:
+        return sum(shard.configurations.shape[0] for shard in self.shards)
 
 
 def exact_state(model: NeuralQuantumState, system: PhysicalSystem) -> ExactState:
@@ -127,4 +145,95 @@ def sampled_energy(
         energy.imag.abs(),
         sample.acceptance_rate,
         sample.exact,
+    )
+
+
+def sharded_sampled_energy(
+    models: tuple[NeuralQuantumState, ...],
+    system: PhysicalSystem,
+    samples: tuple[SampleBatch, ...],
+) -> ShardedSampledEnergy:
+    """Compute global VMC statistics while retaining data on each device."""
+    if len(models) != len(samples) or not models:
+        raise ValueError("models and samples must contain equally many shards")
+    if len({sample.exact for sample in samples}) != 1:
+        raise ValueError("sample shards disagree on exact/Monte Carlo mode")
+
+    with ThreadPoolExecutor(max_workers=len(models)) as executor:
+        local_values = tuple(
+            executor.map(
+                lambda pair: local_energies(pair[0], system, pair[1].configurations),
+                zip(models, samples),
+            )
+        )
+
+    primary = next(models[0].parameters()).device
+    if samples[0].exact:
+        if any(sample.weights is None for sample in samples):
+            raise ValueError("exact shards require globally normalized weights")
+        local_weights = tuple(sample.weights for sample in samples)
+    else:
+        total = sum(sample.configurations.shape[0] for sample in samples)
+        local_weights = tuple(
+            torch.full(
+                (sample.configurations.shape[0],),
+                1.0 / total,
+                dtype=next(model.parameters()).real.dtype,
+                device=next(model.parameters()).device,
+            )
+            for model, sample in zip(models, samples)
+        )
+
+    energy = sum(
+        (
+            torch.sum(weights * local).to(primary)
+            for weights, local in zip(local_weights, local_values)
+        ),
+        torch.zeros((), dtype=local_values[0].dtype, device=primary),
+    )
+    variance = sum(
+        (
+            torch.sum(
+                weights * torch.abs(local - energy.to(local.device)) ** 2
+            ).real.to(primary)
+            for weights, local in zip(local_weights, local_values)
+        ),
+        torch.zeros((), dtype=energy.real.dtype, device=primary),
+    )
+
+    shards = tuple(
+        SampledEnergy(
+            sample.configurations,
+            weights,
+            local,
+            energy.to(local.device),
+            variance.to(local.device),
+            energy.imag.abs().to(local.device),
+            sample.acceptance_rate,
+            sample.exact,
+        )
+        for sample, weights, local in zip(samples, local_weights, local_values)
+    )
+
+    if samples[0].exact:
+        acceptance_rate = None
+    elif all(sample.accepted is not None and sample.proposed for sample in samples):
+        accepted = sum(int(sample.accepted) for sample in samples)
+        proposed = sum(int(sample.proposed) for sample in samples)
+        acceptance_rate = accepted / proposed
+    else:
+        counts = [sample.configurations.shape[0] for sample in samples]
+        acceptance_rate = sum(
+            float(sample.acceptance_rate) * count
+            for sample, count in zip(samples, counts)
+        ) / sum(counts)
+
+    return ShardedSampledEnergy(
+        models,
+        shards,
+        energy,
+        variance,
+        energy.imag.abs(),
+        acceptance_rate,
+        samples[0].exact,
     )

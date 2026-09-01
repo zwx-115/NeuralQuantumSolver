@@ -1,44 +1,56 @@
-# Implemented architecture and migration boundary
+# Ground-state-only architecture
 
-This branch is a clean implementation, while `nqs-gs-time-python-origin` remains
-the immutable behavioral reference.
+This branch contains only exact-diagonalization and neural quantum-state
+ground-state functionality. Real-time evolution and overlap-projection modules
+remain on the `code-v1` branch.
 
-## Current dependency flow
+## Dependency flow
 
 `SpinHalfHilbert + Graph -> PauliHamiltonian -> PhysicalSystem`
 
-`NeuralQuantumState -> exact/Metropolis sampling -> estimator -> objective -> runner`
+`NeuralQuantumState -> Exact/Metropolis sampler -> energy estimator -> Adam/SR -> GroundStateDriver`
 
-Exact diagonalization consumes only `PhysicalSystem`. It therefore works with
-every system assembled from explicit Pauli terms, independently of the NQS.
+Exact diagonalization consumes only `PhysicalSystem` and remains a CPU
+`complex128` reference by default.
 
-## Implemented first milestone
+## Accelerator model
 
-- Legacy-compatible spin enumeration and explicit encoding conversion.
-- Generic packed connected-state generation for Pauli Hamiltonians.
-- Dense `complex128` exact diagonalization and exact real-time propagation.
-- Ising, Heisenberg, XXZ, and J1-J2 system constructors.
-- Unified complex `log_psi` contract with RBM, FNN, and lookup-table ansatzes.
-- Differentiable full-Hilbert-space ground-state energy and Adam runner.
-- Exact and Metropolis samplers with distinct result metadata.
-- `VariationalState` composition of a model, physical system, and sampler.
-- Sampler-independent `Adam` and dense `SR` optimization strategies.
-- `GroundStateDriver` orchestration with callbacks, diagnostics, and checkpointing.
-- Legacy/direct/normalized/gauge-fixed/log-domain overlap entry points and
-  overlap diagnostics.
-- QGT construction, regularized SR solve diagnostics, frozen evolution targets,
-  and structured checkpoints.
+`DeviceMesh` expands one explicit device and `num_gpus` into a homogeneous
+single-host device group, for example `cuda:0..3` or `musa:0..3`. The primary
+model lives on the first device. Replica models independently perform sampling,
+local-energy evaluation, and differentiation. Gradients (Adam) or sufficient
+statistics (SR) are reduced onto the primary model.
 
-## Deliberately not hidden behind the baseline
+No NCCL or MCCL dependency is required. CUDA and MUSA execute the same Python
+and PyTorch code path. The regularized dense SR system is aggregated and solved
+with `torch.linalg.solve` on the primary GPU. `solver_device="cpu"` remains
+available as an explicit diagnostic or compatibility choice.
 
-The stabilized overlap paths are separate functions. They do not replace
-`legacy_ratio_loss`. The present `log_domain_ratio_loss` uses normalized dense
-matrix products as the small-system stability reference; a sparse local-gate
-complex-log-sum implementation belongs to the next evolution milestone.
+The training and NQS evaluation path never catches an accelerator failure or
+automatically retries an operation on CPU. Unsupported CUDA/MUSA operators fail
+at their original call site. CPU copies are limited to best-state/checkpoint
+storage, while dense exact diagonalization is an explicitly separate reference.
+Multi-GPU exact sampling also enumerates integer spin labels on the host before
+distributing shards; this is deterministic data preparation, not an operator
+fallback, and is identical for CUDA and MUSA.
 
-The full-sum projected rollout example is a small-system numerical baseline.
-Monte Carlo overlap projection, a reusable time-evolution driver, minSR,
-persistent-chain/autoregressive samplers, Trotter block scheduling, CUDA
-performance benchmarks, and legacy checkpoint adapters remain future migration
-phases. Their absence does not affect exact diagonalization or the composable
-exact/Monte-Carlo ground-state paths.
+## Supported composition
+
+- Models: `ComplexRBM`, `ComplexFNN`, `LogAmplitudeTable`, or any
+  `NeuralQuantumState` implementing batched `log_psi`.
+- Sampling: exact Hilbert-space summation or Metropolis chains.
+- Optimization: Adam or dense stochastic reconfiguration.
+- Systems: tilted-field Ising, Heisenberg, XXZ, J1-J2, and custom Pauli sums.
+- Devices: CPU, NVIDIA CUDA, and Moore Threads MUSA.
+
+Checkpoints store model tensors on CPU so a run can move between accelerator
+backends.
+
+## Benchmark timing
+
+`GroundStateDriver` synchronizes every selected accelerator around sampling,
+local-energy evaluation, optimization, and complete-step timing boundaries.
+SR additionally synchronizes around log-Jacobian construction, QGT/force
+construction, and the primary-device dense solve. Per-step records are appended
+to CSV immediately, while static environment/configuration and final summaries
+are stored in JSON.

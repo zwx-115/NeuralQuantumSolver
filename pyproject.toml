@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "neural-quantum-solver"
 version = "0.1.0"
-description = "Exact and neural-network solvers for discrete quantum systems"
+description = "Multi-backend neural quantum ground-state solvers"
 requires-python = ">=3.10"
 dependencies = ["torch>=2.2"]
 

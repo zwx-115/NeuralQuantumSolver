@@ -24,6 +24,10 @@ from neural_quantum_solver import (  # noqa: E402
 from neural_quantum_solver.estimators import exact_energy  # noqa: E402
 
 
+# Change these two values when moving between NVIDIA and Moore Threads.
+DEVICE = "cuda:0"  # NVIDIA: "cuda:0"; Moore Threads: "musa"
+NUM_GPUS = 1
+
 # Physical system shared by ED and NQS.
 system = tilted_field_ising(
     num_sites=10,
@@ -33,14 +37,11 @@ system = tilted_field_ising(
     periodic=False,
 )
 
-# PyTorch device names are "cuda" and "cpu"; "gpu" is not valid.
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
 model = ComplexRBM(
     num_visible=system.hilbert.num_sites,
     num_hidden=4 * system.hilbert.num_sites,
-    dtype=torch.complex128,
-    device=device,
+    dtype=torch.complex64,
+    device=DEVICE,
     seed=7,
 )
 
@@ -58,6 +59,7 @@ variational_state = VariationalState(
     model=model,
     sampler=sampler,
     seed=10,
+    num_gpus=NUM_GPUS,
 )
 
 # Adam uses one scalar VMC surrogate loss and one backward call. It does not
@@ -68,7 +70,8 @@ optimizer = Adam(
 
 driver = GroundStateDriver(variational_state, optimizer)
 
-print(f"device                 = {device}")
+print(f"primary device         = {DEVICE}")
+print(f"number of GPUs         = {NUM_GPUS}")
 print(f"samples per step       = {sampler.num_chains * sampler.sweeps}")
 result = driver.run(
     steps=1000,
@@ -77,7 +80,7 @@ result = driver.run(
 )
 
 # Evaluate the final NQS without Monte Carlo noise and compare with ED.
-exact = ExactDiagonalizer(dtype=torch.complex128).ground_state(system)
+exact = ExactDiagonalizer(dtype=torch.complex128, device="cpu").ground_state(system)
 final_full_sum_energy = exact_energy(model, system).energy.item()
 print(f"exact ground energy    = {exact.energy.item():.12f}")
 print(f"best sampled energy    = {result.best_energy:.12f}")

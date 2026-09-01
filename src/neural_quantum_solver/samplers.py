@@ -13,6 +13,8 @@ class SampleBatch:
     weights: torch.Tensor | None
     acceptance_rate: float | None
     exact: bool
+    accepted: int | None = None
+    proposed: int | None = None
 
 
 class Sampler(Protocol):
@@ -79,6 +81,21 @@ class MetropolisSampler:
         self.sweeps = sweeps
         self.sweep_size = sweep_size
 
+    def shard(self, num_shards: int, shard_index: int) -> "MetropolisSampler":
+        """Return one balanced chain shard while preserving total chain count."""
+        if num_shards < 1 or not 0 <= shard_index < num_shards:
+            raise ValueError("invalid sampler shard")
+        quotient, remainder = divmod(self.num_chains, num_shards)
+        local_chains = quotient + int(shard_index < remainder)
+        if local_chains == 0:
+            raise ValueError("num_chains must be at least num_gpus")
+        return MetropolisSampler(
+            local_chains,
+            thermal_sweeps=self.thermal_sweeps,
+            sweeps=self.sweeps,
+            sweep_size=self.sweep_size,
+        )
+
     def sample(
         self, model: NeuralQuantumState, system: PhysicalSystem, *,
         generator: torch.Generator | None = None,
@@ -128,4 +145,6 @@ class MetropolisSampler:
         configurations = torch.stack(samples, dim=0).reshape(
             self.sweeps * self.num_chains, num_sites
         )
-        return SampleBatch(configurations, None, accepted / proposed, False)
+        return SampleBatch(
+            configurations, None, accepted / proposed, False, accepted, proposed
+        )

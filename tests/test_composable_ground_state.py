@@ -1,5 +1,8 @@
 import math
 import copy
+import csv
+import json
+from pathlib import Path
 import torch
 
 from neural_quantum_solver import (
@@ -53,6 +56,9 @@ def test_full_sum_sr_lowers_energy_and_exposes_qgt_diagnostics():
     result = driver.run(steps=15)
     assert result.history[-1].energy < result.history[0].energy
     assert result.history[-1].optimizer_metrics["effective_rank"] > 0
+    assert result.history[-1].optimizer_metrics["solve_seconds"] >= 0
+    assert result.history[-1].optimizer_metrics["jacobian_seconds"] >= 0
+    assert result.history[-1].optimizer_metrics["qgt_force_seconds"] >= 0
 
 
 def test_driver_callback_can_stop_a_run():
@@ -60,6 +66,36 @@ def test_driver_callback_can_stop_a_run():
     driver = GroundStateDriver(FullSumState(system, _model()), Adam(0.01))
     result = driver.run(steps=20, callback=lambda step, _: step.step < 2)
     assert len(result.history) == 3
+
+
+def test_driver_writes_step_history_and_run_metadata():
+    system = tilted_field_ising(3)
+    history_path = Path("benchmark-test-steps.csv")
+    metadata_path = Path("benchmark-test-run.json")
+    driver = GroundStateDriver(FullSumState(system, _model()), Adam(0.01))
+
+    try:
+        result = driver.run(
+            steps=2,
+            history_path=history_path,
+            metadata_path=metadata_path,
+            experiment_label="cpu-test",
+            run_metadata={"case": "unit"},
+        )
+
+        with history_path.open(newline="", encoding="utf-8") as stream:
+            rows = list(csv.DictReader(stream))
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        assert len(rows) == 2
+        assert float(rows[0]["step_seconds"]) >= 0
+        assert rows[0]["energy"]
+        assert metadata["experiment_label"] == "cpu-test"
+        assert metadata["run_config"] == {"case": "unit"}
+        assert metadata["completed_steps"] == 2
+        assert metadata["total_seconds"] == result.total_seconds
+    finally:
+        history_path.unlink(missing_ok=True)
+        metadata_path.unlink(missing_ok=True)
 
 
 def test_exact_vmc_score_gradient_matches_differentiable_energy():
