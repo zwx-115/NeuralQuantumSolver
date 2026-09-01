@@ -91,6 +91,9 @@ device memory, utilization, power, temperature, and clock frequency. Record any
 unsupported operator/OOM traceback and whether the run completed; the solver
 does not retry failed accelerator computation on CPU.
 
+Observed MUSA backend limitations and same-device workarounds are tracked in
+`docs/MUSA_COMPATIBILITY.md`.
+
 ## Exact diagonalization
 
 Exact diagonalization consumes the same `PhysicalSystem` used by the NQS:

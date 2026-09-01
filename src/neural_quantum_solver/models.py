@@ -44,7 +44,11 @@ class ComplexRBM(NeuralQuantumState):
     def log_psi(self, configurations: torch.Tensor) -> torch.Tensor:
         x = configurations.to(dtype=self.weight.dtype, device=self.weight.device)
         theta = x @ self.weight.mT + self.hidden_bias
-        return x @ self.visible_bias + torch.log(2 * torch.cosh(theta)).sum(dim=-1)
+        # MUSA does not currently support the ComplexFloat matrix-vector (mv)
+        # kernel. A one-column matrix uses the mathematically identical mm path
+        # on both CUDA and MUSA and preserves autograd.
+        visible = (x @ self.visible_bias[:, None]).squeeze(-1)
+        return visible + torch.log(2 * torch.cosh(theta)).sum(dim=-1)
 
 
 class ComplexFNN(NeuralQuantumState):

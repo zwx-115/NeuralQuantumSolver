@@ -55,7 +55,8 @@ def solve_sr(
     threshold = rcond * singular_values.max()
     kept = singular_values[singular_values > threshold]
     condition = float((kept.max() / kept.min()).item()) if kept.numel() else float("inf")
-    fs_squared = torch.vdot(update, qgt @ update).real.clamp_min(0)
+    qgt_update = (qgt @ update[:, None]).squeeze(-1)
+    fs_squared = torch.vdot(update, qgt_update).real.clamp_min(0)
     diagnostics = QGTDiagnostics(
         eigenvalues, singular_values, int(kept.numel()), condition, regularization,
         float(torch.linalg.vector_norm(force).item()),
