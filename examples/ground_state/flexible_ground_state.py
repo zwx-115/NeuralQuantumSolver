@@ -1,4 +1,4 @@
-"""Configurable CUDA/MUSA ground-state calculation."""
+"""可配置的 CUDA/MUSA 基态计算示例。"""
 
 from pathlib import Path
 from statistics import mean, median
@@ -15,12 +15,12 @@ if str(SOURCE_ROOT) not in sys.path:
 
 from neural_quantum_solver import (  # noqa: E402
     Adam,
-    ComplexFNN,
-    ComplexRBM,
+    AmplitudePhaseFNN,
+    AmplitudePhaseRBM,
+    AmplitudePhaseTable,
     ExactDiagonalizer,
     ExactSampler,
     GroundStateDriver,
-    LogAmplitudeTable,
     LogJacobian,
     MetropolisSampler,
     SR,
@@ -32,26 +32,25 @@ from neural_quantum_solver.estimators import exact_energy  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Device settings: these are the only two lines needed when changing hardware.
+# 设备设置：切换硬件时只需要修改下面两行。
 # ---------------------------------------------------------------------------
-DEVICE = "musa:0"  # NVIDIA: "cuda:0"; Moore Threads: "musa"
-NUM_GPUS = 1       # 1, 2, 4, ...; uses consecutive cards from DEVICE
+DEVICE = "cuda:0"  # NVIDIA 使用 "cuda:0"；摩尔线程使用 "musa:0"
+NUM_GPUS = 1       # 可设为 1、2、4……；从 DEVICE 开始连续使用显卡
 
 
-# Physical-system settings.
+# 物理系统参数。
 NUM_SITES = 10
 COUPLING = 1.0
 FIELD_X = 0.5
 FIELD_Z = 0.5
 PERIODIC = False
 
-# Shared run settings. complex64 is the portable GPU default; complex128 can be
-# selected when the installed CUDA/MUSA PyTorch build supports it efficiently.
-DTYPE = torch.complex64
+# 完整的加速器训练路径只使用这个实数数据类型。
+DTYPE = torch.float32
 SEED = 666
 OPTIMIZATION_STEPS = 100
 REPORT_EVERY = 10
-RUN_NAME = f"sr_{DEVICE.replace(':', '')}_{NUM_GPUS}gpu"
+RUN_NAME = f"real_pair_sr_{DEVICE.replace(':', '')}_{NUM_GPUS}gpu"
 BENCHMARK_DIR = PROJECT_ROOT / "benchmark_results"
 HISTORY_PATH = BENCHMARK_DIR / f"{RUN_NAME}_steps.csv"
 METADATA_PATH = BENCHMARK_DIR / f"{RUN_NAME}_metadata.json"
@@ -68,20 +67,20 @@ system = tilted_field_ising(
     periodic=PERIODIC,
 )
 
-# Select one model. The two commented alternatives use the same state/driver.
-model = ComplexRBM(
+# 选择一个模型。下面两个注释掉的模型可以使用相同的变分态和驱动器。
+model = AmplitudePhaseRBM(
     num_visible=NUM_SITES,
     num_hidden= ALPHA_NUM* NUM_SITES,
     dtype=DTYPE,
     device=DEVICE,
     seed=SEED,
 )
-# model = ComplexFNN([NUM_SITES, 4 * NUM_SITES, 1], dtype=DTYPE,
-#                    device=DEVICE, seed=SEED)
-# model = LogAmplitudeTable(NUM_SITES, dtype=DTYPE, device=DEVICE)
+# model = AmplitudePhaseFNN([NUM_SITES, 4 * NUM_SITES, 1], dtype=DTYPE,
+#                           device=DEVICE, seed=SEED)
+# model = AmplitudePhaseTable(NUM_SITES, dtype=DTYPE, device=DEVICE)
 
-# Select one sampler. The total retained MC samples remain
-# num_chains * sweeps, independent of NUM_GPUS.
+# 选择一个采样器。MC 保留样本总数始终为 num_chains * sweeps，
+# 不会随 NUM_GPUS 改变。
 sampler = MetropolisSampler(
     num_chains=10000,
     thermal_sweeps=20,
@@ -98,13 +97,14 @@ state = VariationalState(
     num_gpus=NUM_GPUS,
 )
 
-# Select one optimizer. LogJacobian belongs only to SR and is never evaluated
-# by Adam. solver_device="auto" solves on the primary CUDA or MUSA GPU.
+# 选择一个优化器。LogJacobian 仅供 SR 使用，Adam 不会计算它。
+# solver_device="auto" 表示在第一张 CUDA 或 MUSA 显卡上求解。
 optimizer = SR(
     learning_rate=0.05,
     regularization=1e-3,
     rcond=1e-12,
-    jacobian=LogJacobian(method="analytic"),
+    # auto：AmplitudePhaseRBM 使用解析导数，通用实数网络使用 vmap。
+    jacobian=LogJacobian(method="auto"),
     solver_device="auto",
 )
 # optimizer = Adam(learning_rate=0.001)
@@ -131,9 +131,9 @@ result = GroundStateDriver(state, optimizer).run(
     },
 )
 
-# The NQS full-sum evaluation remains on DEVICE, so backend failures are visible
-# instead of being hidden by a CPU fallback. Dense ED is an independent CPU
-# complex128 reference and does not participate in NQS optimization.
+# NQS 的 full-sum 评估仍在 DEVICE 上运行，因此后端错误会直接显示，
+# 不会被 CPU 回退掩盖。稠密 ED 是独立的 CPU complex128 参考计算，
+# 不参与 NQS 优化。
 exact = ExactDiagonalizer(dtype=torch.complex128, device="cpu").ground_state(system)
 final_full_sum_energy = exact_energy(model, system).energy.item()
 steady_steps = result.history[1:] or result.history

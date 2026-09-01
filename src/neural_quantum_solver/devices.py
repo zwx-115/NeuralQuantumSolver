@@ -8,7 +8,7 @@ SUPPORTED_DEVICE_TYPES = frozenset({"cpu", "cuda", "musa"})
 
 
 def expand_device_names(device: str | torch.device, num_gpus: int) -> tuple[str, ...]:
-    """Expand ``cuda:1``/``musa`` into consecutive same-backend devices."""
+    """将 ``cuda:1`` 或 ``musa`` 展开为连续的同后端设备。"""
     if isinstance(num_gpus, bool) or not isinstance(num_gpus, int) or num_gpus < 1:
         raise ValueError("num_gpus must be a positive integer")
     text = str(device).lower()
@@ -39,7 +39,7 @@ def _backend_module(backend: str):
 
 @dataclass(frozen=True)
 class DeviceMesh:
-    """One-host homogeneous device group used by ground-state data parallelism."""
+    """用于基态数据并行的单主机同构设备组。"""
 
     devices: tuple[torch.device, ...]
 
@@ -76,14 +76,14 @@ class DeviceMesh:
 
 
 def make_generator(device: torch.device, seed: int) -> torch.Generator:
-    """Create a reproducible generator on CPU, CUDA, or MUSA."""
+    """在 CPU、CUDA 或 MUSA 上创建可复现的随机数生成器。"""
     generator = torch.Generator(device=device)
     generator.manual_seed(seed)
     return generator
 
 
 def synchronize_devices(devices: tuple[torch.device, ...]) -> None:
-    """Synchronize accelerator work so wall-clock stage timings are accurate."""
+    """同步加速器任务，保证各阶段墙钟计时准确。"""
     for device in devices:
         if device.type != "cpu":
             _backend_module(device.type).synchronize(device)

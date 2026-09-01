@@ -1,0 +1,281 @@
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+
+import torch
+
+from .models import AmplitudePhaseNQS, LogPsiParts
+from .samplers import SampleBatch
+from .systems import PhysicalSystem
+
+
+@dataclass(frozen=True)
+class RealPairExactState:
+    configurations: torch.Tensor
+    log_psi: LogPsiParts
+    amplitude_real: torch.Tensor
+    amplitude_imag: torch.Tensor
+    probabilities: torch.Tensor
+    log_norm: torch.Tensor
+
+
+@dataclass(frozen=True)
+class RealPairEnergyEstimate:
+    energy: torch.Tensor
+    variance: torch.Tensor
+    local_energy_real: torch.Tensor
+    local_energy_imag: torch.Tensor
+    imaginary_residual: torch.Tensor
+
+
+@dataclass(frozen=True)
+class RealPairSampledEnergy:
+    configurations: torch.Tensor
+    weights: torch.Tensor
+    local_energy_real: torch.Tensor
+    local_energy_imag: torch.Tensor
+    energy: torch.Tensor
+    energy_imag: torch.Tensor
+    variance: torch.Tensor
+    imaginary_residual: torch.Tensor
+    acceptance_rate: float | None
+    exact: bool
+
+
+@dataclass(frozen=True)
+class RealPairShardedSampledEnergy:
+    models: tuple[AmplitudePhaseNQS, ...]
+    shards: tuple[RealPairSampledEnergy, ...]
+    energy: torch.Tensor
+    energy_imag: torch.Tensor
+    variance: torch.Tensor
+    imaginary_residual: torch.Tensor
+    acceptance_rate: float | None
+    exact: bool
+
+    @property
+    def num_samples(self) -> int:
+        return sum(shard.configurations.shape[0] for shard in self.shards)
+
+
+def real_pair_exact_state(
+    model: AmplitudePhaseNQS, system: PhysicalSystem
+) -> RealPairExactState:
+    parameter = next(model.parameters())
+    configurations = system.hilbert.all_states(device=parameter.device)
+    parts = model.log_psi_parts(configurations)
+    log_norm = torch.logsumexp(2 * parts.log_amplitude, dim=0)
+    magnitude = torch.exp(parts.log_amplitude - 0.5 * log_norm)
+    amplitude_real = magnitude * torch.cos(parts.phase)
+    amplitude_imag = magnitude * torch.sin(parts.phase)
+    probabilities = torch.exp(2 * parts.log_amplitude - log_norm)
+    return RealPairExactState(
+        configurations,
+        parts,
+        amplitude_real,
+        amplitude_imag,
+        probabilities,
+        log_norm,
+    )
+
+
+@torch.no_grad()
+def real_pair_local_energies(
+    model: AmplitudePhaseNQS,
+    system: PhysicalSystem,
+    configurations: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    parameter = next(model.parameters())
+    connections = system.hamiltonian.real_connections(
+        configurations, dtype=parameter.dtype
+    )
+    base = model.log_psi_parts(configurations)
+    connected = model.log_psi_parts(connections.states)
+    sample_indices = connections.sample_indices
+    delta_log_amplitude = (
+        connected.log_amplitude - base.log_amplitude[sample_indices]
+    )
+    delta_phase = connected.phase - base.phase[sample_indices]
+    magnitude = torch.exp(delta_log_amplitude)
+    ratio_real = magnitude * torch.cos(delta_phase)
+    ratio_imag = magnitude * torch.sin(delta_phase)
+    terms_real = (
+        connections.matrix_elements_real * ratio_real
+        - connections.matrix_elements_imag * ratio_imag
+    )
+    terms_imag = (
+        connections.matrix_elements_real * ratio_imag
+        + connections.matrix_elements_imag * ratio_real
+    )
+    local_real = torch.zeros(
+        configurations.shape[0], dtype=parameter.dtype, device=parameter.device
+    )
+    local_imag = torch.zeros_like(local_real)
+    local_real.index_add_(0, sample_indices, terms_real)
+    local_imag.index_add_(0, sample_indices, terms_imag)
+    return local_real, local_imag
+
+
+def real_pair_exact_energy(
+    model: AmplitudePhaseNQS, system: PhysicalSystem
+) -> RealPairEnergyEstimate:
+    state = real_pair_exact_state(model, system)
+    local_real, local_imag = real_pair_local_energies(
+        model, system, state.configurations
+    )
+    energy = torch.sum(state.probabilities * local_real)
+    energy_imag = torch.sum(state.probabilities * local_imag)
+    variance_raw = torch.sum(
+        state.probabilities
+        * ((local_real - energy).square() + (local_imag - energy_imag).square())
+    )
+    variance = torch.clamp_min(variance_raw, 0)
+    return RealPairEnergyEstimate(
+        energy, variance, local_real, local_imag, torch.abs(energy_imag)
+    )
+
+
+def _sample_weights(
+    sample: SampleBatch, model: AmplitudePhaseNQS
+) -> torch.Tensor:
+    if sample.exact:
+        if sample.weights is None:
+            raise ValueError("an exact sample batch must contain Born weights")
+        return sample.weights
+    parameter = next(model.parameters())
+    return torch.full(
+        (sample.configurations.shape[0],),
+        1.0 / sample.configurations.shape[0],
+        dtype=parameter.dtype,
+        device=parameter.device,
+    )
+
+
+def real_pair_sampled_energy(
+    model: AmplitudePhaseNQS,
+    system: PhysicalSystem,
+    sample: SampleBatch,
+) -> RealPairSampledEnergy:
+    weights = _sample_weights(sample, model)
+    local_real, local_imag = real_pair_local_energies(
+        model, system, sample.configurations
+    )
+    energy = torch.sum(weights * local_real)
+    energy_imag = torch.sum(weights * local_imag)
+    variance = torch.sum(
+        weights
+        * ((local_real - energy).square() + (local_imag - energy_imag).square())
+    )
+    return RealPairSampledEnergy(
+        sample.configurations,
+        weights,
+        local_real,
+        local_imag,
+        energy,
+        energy_imag,
+        variance,
+        torch.abs(energy_imag),
+        sample.acceptance_rate,
+        sample.exact,
+    )
+
+
+def real_pair_sharded_sampled_energy(
+    models: tuple[AmplitudePhaseNQS, ...],
+    system: PhysicalSystem,
+    samples: tuple[SampleBatch, ...],
+) -> RealPairShardedSampledEnergy:
+    if len(models) != len(samples) or not models:
+        raise ValueError("models and samples must contain equally many shards")
+    if len({sample.exact for sample in samples}) != 1:
+        raise ValueError("sample shards disagree on exact/Monte Carlo mode")
+    with ThreadPoolExecutor(max_workers=len(models)) as executor:
+        local_values = tuple(
+            executor.map(
+                lambda pair: real_pair_local_energies(
+                    pair[0], system, pair[1].configurations
+                ),
+                zip(models, samples),
+            )
+        )
+    primary = next(models[0].parameters()).device
+    if samples[0].exact:
+        if any(sample.weights is None for sample in samples):
+            raise ValueError("exact shards require globally normalized weights")
+        local_weights = tuple(sample.weights for sample in samples)
+    else:
+        total = sum(sample.configurations.shape[0] for sample in samples)
+        local_weights = tuple(
+            torch.full(
+                (sample.configurations.shape[0],),
+                1.0 / total,
+                dtype=next(model.parameters()).dtype,
+                device=next(model.parameters()).device,
+            )
+            for model, sample in zip(models, samples)
+        )
+    energy = sum(
+        (
+            torch.sum(weights * local[0]).to(primary)
+            for weights, local in zip(local_weights, local_values)
+        ),
+        torch.zeros((), dtype=local_values[0][0].dtype, device=primary),
+    )
+    energy_imag = sum(
+        (
+            torch.sum(weights * local[1]).to(primary)
+            for weights, local in zip(local_weights, local_values)
+        ),
+        torch.zeros((), dtype=local_values[0][1].dtype, device=primary),
+    )
+    variance = sum(
+        (
+            torch.sum(
+                weights
+                * (
+                    (local[0] - energy.to(local[0].device)).square()
+                    + (local[1] - energy_imag.to(local[1].device)).square()
+                )
+            ).to(primary)
+            for weights, local in zip(local_weights, local_values)
+        ),
+        torch.zeros((), dtype=energy.dtype, device=primary),
+    )
+    shards = tuple(
+        RealPairSampledEnergy(
+            sample.configurations,
+            weights,
+            local[0],
+            local[1],
+            energy.to(local[0].device),
+            energy_imag.to(local[0].device),
+            variance.to(local[0].device),
+            torch.abs(energy_imag).to(local[0].device),
+            sample.acceptance_rate,
+            sample.exact,
+        )
+        for sample, weights, local in zip(samples, local_weights, local_values)
+    )
+    if samples[0].exact:
+        acceptance_rate = None
+    elif all(sample.accepted is not None and sample.proposed for sample in samples):
+        accepted = sum(int(sample.accepted) for sample in samples)
+        proposed = sum(int(sample.proposed) for sample in samples)
+        acceptance_rate = accepted / proposed
+    else:
+        counts = [sample.configurations.shape[0] for sample in samples]
+        acceptance_rate = sum(
+            float(sample.acceptance_rate) * count
+            for sample, count in zip(samples, counts)
+        ) / sum(counts)
+    return RealPairShardedSampledEnergy(
+        models,
+        shards,
+        energy,
+        energy_imag,
+        variance,
+        torch.abs(energy_imag),
+        acceptance_rate,
+        samples[0].exact,
+    )

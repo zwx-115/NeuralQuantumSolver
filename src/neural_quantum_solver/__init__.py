@@ -1,10 +1,21 @@
-"""NeuralQuantumSolver public API."""
+"""NeuralQuantumSolver 的公开 API。"""
 
 from .exact import EigenResult, ExactDiagonalizer
 from .devices import DeviceMesh, expand_device_names
 from .hilbert import SpinHalfHilbert
-from .models import ComplexFNN, ComplexRBM, LogAmplitudeTable, NeuralQuantumState
-from .derivatives import LogJacobian, LogJacobianStrategy
+from .models import (
+    AmplitudePhaseFNN,
+    AmplitudePhaseNQS,
+    AmplitudePhaseRBM,
+    AmplitudePhaseTable,
+    ComplexFNN,
+    ComplexRBM,
+    LogAmplitudeTable,
+    LogPsiParts,
+    NeuralQuantumState,
+    RealRBM,
+)
+from .derivatives import LogJacobian, LogJacobianStrategy, RealLogDerivativeParts
 from .drivers import GroundStateDriver, GroundStateResult, update_run_metadata
 from .optimizers import (
     Adam,
@@ -18,9 +29,12 @@ from .systems import PhysicalSystem, heisenberg, j1j2_heisenberg, tilted_field_i
 from .variational import FullSumState, VariationalState
 
 __all__ = [
-    "ComplexFNN", "ComplexRBM", "DeviceMesh", "EigenResult", "ExactDiagonalizer",
+    "AmplitudePhaseFNN", "AmplitudePhaseNQS", "AmplitudePhaseRBM",
+    "AmplitudePhaseTable", "ComplexFNN", "ComplexRBM", "DeviceMesh",
+    "EigenResult", "ExactDiagonalizer",
     "LogAmplitudeTable", "NeuralQuantumState", "PhysicalSystem",
-    "LogJacobian", "LogJacobianStrategy",
+    "LogJacobian", "LogJacobianStrategy", "LogPsiParts",
+    "RealLogDerivativeParts", "RealRBM",
     "SpinHalfHilbert", "heisenberg", "j1j2_heisenberg",
     "tilted_field_ising", "xxz",
     "Adam", "ExactSampler", "FullSumState", "GroundStateDriver",

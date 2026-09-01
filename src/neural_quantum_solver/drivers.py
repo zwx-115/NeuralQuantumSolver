@@ -12,6 +12,8 @@ import torch
 
 from .devices import synchronize_devices
 from .estimators import ShardedSampledEnergy
+from .models import AmplitudePhaseNQS
+from .real_estimators import RealPairShardedSampledEnergy
 from .optimizers import GroundStateOptimizer, OptimizerStep
 from .checkpoint import save_checkpoint
 from .variational import VariationalState
@@ -43,7 +45,7 @@ class GroundStateResult:
 
 
 class GroundStateDriver:
-    """Sampler- and optimizer-independent VMC ground-state driver."""
+    """与采样器和优化器解耦的 VMC 基态驱动器。"""
 
     def __init__(
         self,
@@ -77,7 +79,9 @@ class GroundStateDriver:
         step_seconds = perf_counter() - step_started
         num_samples = (
             statistics.num_samples
-            if isinstance(statistics, ShardedSampledEnergy)
+            if isinstance(
+                statistics, (ShardedSampledEnergy, RealPairShardedSampledEnergy)
+            )
             else statistics.configurations.shape[0]
         )
         result = GroundStateStep(
@@ -162,6 +166,11 @@ class GroundStateDriver:
                     "optimizer": type(self.optimizer).__name__,
                     "device": str(self.state.device_mesh.primary),
                     "num_gpus": self.state.device_mesh.num_devices,
+                    "representation": (
+                        "real_pair"
+                        if isinstance(self.state.model, AmplitudePhaseNQS)
+                        else "complex"
+                    ),
                 },
                 step=self.step_count,
             )
@@ -256,6 +265,11 @@ def _run_metadata(driver: GroundStateDriver, label: str | None) -> dict[str, obj
         "num_gpus": driver.state.device_mesh.num_devices,
         "dtype": str(parameter.dtype),
         "model": type(driver.state.model).__name__,
+        "representation": (
+            "real_pair"
+            if isinstance(driver.state.model, AmplitudePhaseNQS)
+            else "complex"
+        ),
         "parameter_count": sum(value.numel() for value in driver.state.model.parameters()),
         "sampler": type(driver.state.sampler).__name__,
         "sampler_config": _public_scalar_settings(driver.state.sampler),
@@ -274,7 +288,7 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 
 
 def update_run_metadata(path: str | Path, **values: object) -> None:
-    """Append final reference/evaluation values to an existing run JSON file."""
+    """向已有运行记录 JSON 中追加最终参考值和评估结果。"""
     target = Path(path)
     with target.open("r", encoding="utf-8") as stream:
         payload = json.load(stream)

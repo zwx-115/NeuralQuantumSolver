@@ -1,4 +1,4 @@
-"""NQS ground-state optimization with Adam and exact Hilbert-space sums."""
+"""使用 Adam 和完整 Hilbert 空间求和优化 NQS 基态。"""
 
 from pathlib import Path
 import sys
@@ -6,7 +6,7 @@ import sys
 import torch
 
 
-# Allow this example to run directly without `pip install -e .`.
+# 无需先执行 `pip install -e .`，也可以直接运行这个示例。
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = PROJECT_ROOT / "src"
 if str(SOURCE_ROOT) not in sys.path:
@@ -14,7 +14,7 @@ if str(SOURCE_ROOT) not in sys.path:
 
 from neural_quantum_solver import (  # noqa: E402
     Adam,
-    ComplexRBM,
+    AmplitudePhaseRBM,
     ExactDiagonalizer,
     FullSumState,
     GroundStateDriver,
@@ -24,7 +24,7 @@ from neural_quantum_solver.estimators import exact_energy  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Editable experiment settings
+# 可编辑的实验参数
 # ---------------------------------------------------------------------------
 NUM_SITES = 14
 COUPLING = 1.0
@@ -37,13 +37,13 @@ LEARNING_RATE = 0.01
 OPTIMIZATION_STEPS = 300
 REPORT_EVERY = 10
 
-DTYPE = torch.complex64
+DTYPE = torch.float32
 DEVICE = "cuda:0"  # NVIDIA: "cuda:0"; Moore Threads: "musa"
 NUM_GPUS = 1
 SEED = 7
 
 
-# ED and NQS consume exactly the same physical-system object.
+# ED 与 NQS 使用完全相同的物理系统对象。
 system = tilted_field_ising(
     num_sites=NUM_SITES,
     coupling=COUPLING,
@@ -52,7 +52,7 @@ system = tilted_field_ising(
     periodic=PERIODIC,
 )
 
-model = ComplexRBM(
+model = AmplitudePhaseRBM(
     num_visible=NUM_SITES,
     num_hidden=HIDDEN_DENSITY * NUM_SITES,
     dtype=DTYPE,
@@ -60,8 +60,8 @@ model = ComplexRBM(
     seed=SEED,
 )
 
-# FullSumState enumerates all 2**NUM_SITES configurations with their exact Born
-# probabilities. There are no Markov chains, thermal sweeps, or MC acceptance.
+# FullSumState 枚举全部 2**NUM_SITES 个构型及其精确 Born 概率，
+# 因此不存在 Markov 链、热化 sweep 或 MC 接受率。
 variational_state = FullSumState(
     system=system,
     model=model,
@@ -84,8 +84,8 @@ result = GroundStateDriver(variational_state, optimizer).run(
     checkpoint_path=PROJECT_ROOT / "checkpoints" / "ground_state_adam_full_sum.pt",
 )
 
-# Both quantities below are noise-free. The first is the exact eigenvalue; the
-# second is the exact energy expectation of the final NQS wavefunction.
+# 下面两个量都没有采样噪声：第一个是精确本征值，第二个是最终 NQS
+# 波函数的精确能量期望值。
 exact = ExactDiagonalizer(dtype=torch.complex128, device="cpu").ground_state(system)
 final_nqs_energy = exact_energy(model, system).energy.item()
 

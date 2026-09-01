@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 import torch
-from .models import NeuralQuantumState
+from .models import AmplitudePhaseNQS, NeuralQuantumState
 from .systems import PhysicalSystem
 
 
@@ -38,17 +38,20 @@ class ExactSampler:
         device = next(model.parameters()).device
         configurations = system.hilbert.all_states(device=device)
         with torch.no_grad():
-            probabilities = torch.softmax(2 * model.log_psi(configurations).real, dim=0)
+            if isinstance(model, AmplitudePhaseNQS):
+                log_amplitude = model.log_amplitude(configurations)
+            else:
+                log_amplitude = model.log_psi(configurations).real
+            probabilities = torch.softmax(2 * log_amplitude, dim=0)
         return SampleBatch(configurations, probabilities, None, True)
 
 
 class MetropolisSampler:
-    """Parallel-chain Metropolis sampler with trajectory collection.
+    """能够保留演化轨迹的并行链 Metropolis 采样器。
 
-    ``sweeps`` is the number of retained samples per chain.  ``sweep_size`` is
-    the number of local single-spin proposals between two retained samples;
-    when omitted it is the number of sites, i.e. one full lattice sweep.
-    Consequently, each call returns ``num_chains * sweeps`` configurations.
+    ``sweeps`` 表示每条链保留的样本数。``sweep_size`` 表示两个保留样本
+    之间执行的局域单自旋提议次数；省略时取格点数，即完整扫描一次晶格。
+    因此每次调用返回 ``num_chains * sweeps`` 个构型。
     """
 
     def __init__(
@@ -82,7 +85,7 @@ class MetropolisSampler:
         self.sweep_size = sweep_size
 
     def shard(self, num_shards: int, shard_index: int) -> "MetropolisSampler":
-        """Return one balanced chain shard while preserving total chain count."""
+        """在保持总链数不变的前提下返回一个负载均衡的链分片。"""
         if num_shards < 1 or not 0 <= shard_index < num_shards:
             raise ValueError("invalid sampler shard")
         quotient, remainder = divmod(self.num_chains, num_shards)
@@ -111,17 +114,25 @@ class MetropolisSampler:
         site_cursor = 0
 
         with torch.no_grad():
-            log_psi = model.log_psi(states)
+            if isinstance(model, AmplitudePhaseNQS):
+                log_amplitude = model.log_amplitude(states)
+            else:
+                log_amplitude = model.log_psi(states).real
 
             def advance(num_updates: int, *, measure_acceptance: bool) -> None:
-                nonlocal accepted, proposed, site_cursor, log_psi
+                nonlocal accepted, proposed, site_cursor, log_amplitude
                 for _ in range(num_updates):
                     site = site_cursor % num_sites
                     site_cursor += 1
                     trial = states.clone()
                     trial[:, site] *= -1
-                    trial_log = model.log_psi(trial)
-                    probability = torch.exp(2 * (trial_log.real - log_psi.real))
+                    if isinstance(model, AmplitudePhaseNQS):
+                        trial_log_amplitude = model.log_amplitude(trial)
+                    else:
+                        trial_log_amplitude = model.log_psi(trial).real
+                    probability = torch.exp(
+                        2 * (trial_log_amplitude - log_amplitude)
+                    )
                     random = torch.rand(
                         self.num_chains, device=device, generator=generator
                     )
@@ -132,9 +143,9 @@ class MetropolisSampler:
                         accepted += int(take.sum())
                         proposed += self.num_chains
                     states[take] = trial[take]
-                    log_psi[take] = trial_log[take]
+                    log_amplitude[take] = trial_log_amplitude[take]
 
-            # Thermal sweeps retain their conventional size of num_sites.
+            # 热化阶段仍按传统定义，每次 sweep 执行 num_sites 次更新。
             advance(self.thermal_sweeps * num_sites, measure_acceptance=False)
 
             samples = []

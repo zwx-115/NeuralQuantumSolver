@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 import torch
-from .models import NeuralQuantumState
+from .models import AmplitudePhaseNQS, NeuralQuantumState
+from .real_estimators import (
+    RealPairEnergyEstimate,
+    RealPairExactState,
+    real_pair_exact_energy,
+    real_pair_exact_state,
+)
 from .samplers import SampleBatch
 from .systems import PhysicalSystem
 
@@ -39,7 +45,7 @@ class SampledEnergy:
 
 @dataclass(frozen=True)
 class ShardedSampledEnergy:
-    """Global statistics plus device-local shards for data-parallel updates."""
+    """用于数据并行更新的全局统计量和设备局部分片。"""
 
     models: tuple[NeuralQuantumState, ...]
     shards: tuple[SampledEnergy, ...]
@@ -54,7 +60,11 @@ class ShardedSampledEnergy:
         return sum(shard.configurations.shape[0] for shard in self.shards)
 
 
-def exact_state(model: NeuralQuantumState, system: PhysicalSystem) -> ExactState:
+def exact_state(
+    model: NeuralQuantumState, system: PhysicalSystem
+) -> ExactState | RealPairExactState:
+    if isinstance(model, AmplitudePhaseNQS):
+        return real_pair_exact_state(model, system)
     device = next(model.parameters()).device
     configurations = system.hilbert.all_states(device=device)
     log_amplitudes = model.log_psi(configurations)
@@ -71,7 +81,9 @@ def exact_state(model: NeuralQuantumState, system: PhysicalSystem) -> ExactState
 
 def exact_energy(
     model: NeuralQuantumState, system: PhysicalSystem, *, dtype: torch.dtype | None = None
-) -> EnergyEstimate:
+) -> EnergyEstimate | RealPairEnergyEstimate:
+    if isinstance(model, AmplitudePhaseNQS):
+        return real_pair_exact_energy(model, system)
     state = exact_state(model, system)
     dtype = dtype or state.amplitudes.dtype
     connections = system.hamiltonian.connections(state.configurations, dtype=dtype)
@@ -121,15 +133,15 @@ def local_energies(
     system: PhysicalSystem,
     configurations: torch.Tensor,
 ) -> torch.Tensor:
-    """Evaluate the generic packed-connection local-energy estimator."""
+    """计算通用打包连接形式的局域能量估计量。"""
     parameter = next(model.parameters())
     connections = system.hamiltonian.connections(
         configurations, dtype=parameter.dtype
     )
     base = model.log_psi(configurations)
     connected = model.log_psi(connections.states)
-    # MUSA does not provide a ComplexFloat exp kernel. Compute
-    # exp(a+ib) and the following complex multiplication with real kernels.
+    # MUSA 不提供 ComplexFloat 的 exp 内核，因此使用实数内核计算
+    # exp(a+ib) 以及后续复数乘法。
     delta = connected - base[connections.sample_indices]
     magnitude = torch.exp(delta.real)
     exponential_real = magnitude * torch.cos(delta.imag)
@@ -172,8 +184,8 @@ def sampled_energy(
 ) -> SampledEnergy:
     weights = sample_weights(sample, model)
     local = local_energies(model, system, sample.configurations)
-    # MUSA also lacks ComplexFloat reductions, so reduce both components
-    # independently and reconstruct the scalar afterward.
+    # MUSA 也缺少 ComplexFloat 归约，因此分别归约实部和虚部，
+    # 然后再重建标量。
     energy = torch.complex(
         torch.sum(weights * local.real),
         torch.sum(weights * local.imag),
@@ -196,7 +208,7 @@ def sharded_sampled_energy(
     system: PhysicalSystem,
     samples: tuple[SampleBatch, ...],
 ) -> ShardedSampledEnergy:
-    """Compute global VMC statistics while retaining data on each device."""
+    """在数据保留于各设备的同时计算全局 VMC 统计量。"""
     if len(models) != len(samples) or not models:
         raise ValueError("models and samples must contain equally many shards")
     if len({sample.exact for sample in samples}) != 1:

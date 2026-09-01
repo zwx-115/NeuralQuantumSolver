@@ -34,7 +34,7 @@ def tilted_field_ising(
     field_z: float = 0.5,
     periodic: bool = False,
 ) -> PhysicalSystem:
-    """H = J sum ZZ - hx sum X - hz sum Z, in Pauli convention."""
+    """Pauli 约定下的 H = J sum ZZ - hx sum X - hz sum Z。"""
     lattice = Graph.chain(num_sites, periodic=periodic)
     terms = [PauliTerm(coupling, ((i, "Z"), (j, "Z"))) for i, j in lattice.edges]
     terms += [PauliTerm(-field_x, ((i, "X"),)) for i in range(num_sites)]

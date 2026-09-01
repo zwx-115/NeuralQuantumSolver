@@ -10,13 +10,23 @@ import torch
 from .derivatives import (
     LogJacobian,
     LogJacobianStrategy,
+    RealLogDerivativeParts,
     sequential_log_derivative_matrix,
     vmap_log_derivative_matrix,
 )
 from .estimators import SampledEnergy, ShardedSampledEnergy
+from .real_estimators import (
+    RealPairSampledEnergy,
+    RealPairShardedSampledEnergy,
+)
 from .devices import synchronize_devices
 from .models import NeuralQuantumState
-from .qgt import QGTDiagnostics, quantum_geometric_tensor, solve_sr
+from .qgt import (
+    QGTDiagnostics,
+    quantum_geometric_tensor,
+    real_quantum_geometric_tensor,
+    solve_sr,
+)
 
 
 @dataclass(frozen=True)
@@ -27,13 +37,18 @@ class OptimizerStep:
 
 
 class GroundStateOptimizer(ABC):
-    """Strategy interface used by GroundStateDriver."""
+    """供 GroundStateDriver 调用的优化策略接口。"""
 
     @abstractmethod
     def step(
         self,
         model: NeuralQuantumState,
-        statistics: SampledEnergy | ShardedSampledEnergy,
+        statistics: (
+            SampledEnergy
+            | ShardedSampledEnergy
+            | RealPairSampledEnergy
+            | RealPairShardedSampledEnergy
+        ),
     ) -> OptimizerStep:
         pass
 
@@ -50,7 +65,7 @@ def _parameter_norm(tensors) -> float:
 
 
 class Adam(GroundStateOptimizer):
-    """PyTorch Adam using the VMC score-function energy gradient."""
+    """使用 VMC 得分函数能量梯度的 PyTorch Adam。"""
 
     def __init__(
         self,
@@ -90,21 +105,49 @@ class Adam(GroundStateOptimizer):
         )
         surrogate.backward()
 
+    @staticmethod
+    def _backward_real_shard(
+        model: NeuralQuantumState, statistics: RealPairSampledEnergy
+    ) -> None:
+        parts = model.log_psi_parts(statistics.configurations)
+        centered_real = (statistics.local_energy_real - statistics.energy).detach()
+        centered_imag = (
+            statistics.local_energy_imag - statistics.energy_imag
+        ).detach()
+        surrogate = 2 * torch.sum(
+            statistics.weights
+            * (
+                centered_real * parts.log_amplitude
+                + centered_imag * parts.phase
+            )
+        )
+        surrogate.backward()
+
     def step(
         self,
         model: NeuralQuantumState,
-        statistics: SampledEnergy | ShardedSampledEnergy,
+        statistics: (
+            SampledEnergy
+            | ShardedSampledEnergy
+            | RealPairSampledEnergy
+            | RealPairShardedSampledEnergy
+        ),
     ) -> OptimizerStep:
         optimizer = self._get_optimizer(model)
         optimizer.zero_grad(set_to_none=True)
         devices = (
             tuple(next(replica.parameters()).device for replica in statistics.models)
-            if isinstance(statistics, ShardedSampledEnergy)
+            if isinstance(
+                statistics,
+                (ShardedSampledEnergy, RealPairShardedSampledEnergy),
+            )
             else (next(model.parameters()).device,)
         )
         synchronize_devices(devices)
         backward_started = perf_counter()
-        if isinstance(statistics, ShardedSampledEnergy):
+        if isinstance(
+            statistics, (ShardedSampledEnergy, RealPairShardedSampledEnergy)
+        ):
             if statistics.models[0] is not model:
                 raise ValueError("the first statistics replica must be the primary model")
             for replica in statistics.models[1:]:
@@ -112,7 +155,11 @@ class Adam(GroundStateOptimizer):
             with ThreadPoolExecutor(max_workers=len(statistics.models)) as executor:
                 tuple(
                     executor.map(
-                        lambda pair: self._backward_shard(pair[0], pair[1]),
+                        lambda pair: (
+                            self._backward_real_shard(pair[0], pair[1])
+                            if isinstance(pair[1], RealPairSampledEnergy)
+                            else self._backward_shard(pair[0], pair[1])
+                        ),
                         zip(statistics.models, statistics.shards),
                     )
                 )
@@ -130,7 +177,10 @@ class Adam(GroundStateOptimizer):
                     else:
                         primary.grad.add_(replica_gradient)
         else:
-            self._backward_shard(model, statistics)
+            if isinstance(statistics, RealPairSampledEnergy):
+                self._backward_real_shard(model, statistics)
+            else:
+                self._backward_shard(model, statistics)
         synchronize_devices(devices)
         backward_seconds = perf_counter() - backward_started
         gradients = [
@@ -147,7 +197,10 @@ class Adam(GroundStateOptimizer):
         ]
         metrics = (
             {"num_devices": len(statistics.models)}
-            if isinstance(statistics, ShardedSampledEnergy)
+            if isinstance(
+                statistics,
+                (ShardedSampledEnergy, RealPairShardedSampledEnergy),
+            )
             else {}
         )
         metrics["backward_seconds"] = backward_seconds
@@ -169,7 +222,7 @@ def flatten_tensors(tensors) -> torch.Tensor:
 def log_derivative_matrix(
     model: NeuralQuantumState, configurations: torch.Tensor
 ) -> torch.Tensor:
-    """Compatibility wrapper for the original sequential implementation."""
+    """旧版逐样本实现的兼容包装函数。"""
     return sequential_log_derivative_matrix(model, configurations)
 
 
@@ -179,7 +232,7 @@ def log_derivative_matrix_vmap(
     *,
     chunk_size: int | None = None,
 ) -> torch.Tensor:
-    """Compatibility wrapper for the batched vmap implementation."""
+    """批量 vmap 实现的兼容包装函数。"""
     return vmap_log_derivative_matrix(
         model, configurations, chunk_size=chunk_size
     )
@@ -197,7 +250,7 @@ def apply_flat_update(model: NeuralQuantumState, update: torch.Tensor) -> None:
 
 
 class SR(GroundStateOptimizer):
-    """Dense stochastic reconfiguration/natural-gradient optimizer."""
+    """稠密随机重构（自然梯度）优化器。"""
 
     def __init__(
         self,
@@ -216,7 +269,7 @@ class SR(GroundStateOptimizer):
         self.solver_device = solver_device
         if jacobian is not None and not callable(jacobian):
             raise TypeError("jacobian must be callable")
-        # Keep the pre-refactor SR behavior unless a strategy is injected.
+        # 未显式传入策略时，保持重构前 SR 的默认行为。
         self.jacobian = (
             jacobian if jacobian is not None else LogJacobian(method="sequential")
         )
@@ -266,12 +319,144 @@ class SR(GroundStateOptimizer):
         qgt_force_seconds = perf_counter() - qgt_started
         return qgt, force, jacobian_seconds, qgt_force_seconds
 
+    def _real_qgt_and_force(
+        self,
+        model: NeuralQuantumState,
+        statistics: RealPairSampledEnergy,
+    ) -> tuple[torch.Tensor, torch.Tensor, float, float]:
+        device = next(model.parameters()).device
+        synchronize_devices((device,))
+        jacobian_started = perf_counter()
+        derivatives = self.jacobian(model, statistics.configurations)
+        if not isinstance(derivatives, RealLogDerivativeParts):
+            raise TypeError("real-pair SR requires real log-derivative parts")
+        synchronize_devices((device,))
+        jacobian_seconds = perf_counter() - jacobian_started
+        qgt_started = perf_counter()
+        weights = statistics.weights
+        qgt = real_quantum_geometric_tensor(
+            derivatives.log_amplitude, derivatives.phase, weights
+        )
+        amplitude_mean = torch.sum(
+            weights[:, None] * derivatives.log_amplitude, dim=0
+        )
+        phase_mean = torch.sum(weights[:, None] * derivatives.phase, dim=0)
+        amplitude_centered = derivatives.log_amplitude - amplitude_mean
+        phase_centered = derivatives.phase - phase_mean
+        centered_real = (
+            statistics.local_energy_real - statistics.energy
+        ).detach()
+        centered_imag = (
+            statistics.local_energy_imag - statistics.energy_imag
+        ).detach()
+        force = torch.sum(
+            weights[:, None]
+            * (
+                amplitude_centered * centered_real[:, None]
+                + phase_centered * centered_imag[:, None]
+            ),
+            dim=0,
+        )
+        synchronize_devices((device,))
+        return (
+            qgt,
+            force,
+            jacobian_seconds,
+            perf_counter() - qgt_started,
+        )
+
+    def _sharded_real_qgt_and_force(
+        self, statistics: RealPairShardedSampledEnergy
+    ) -> tuple[torch.Tensor, torch.Tensor, float, float]:
+        devices = tuple(next(model.parameters()).device for model in statistics.models)
+        synchronize_devices(devices)
+        jacobian_started = perf_counter()
+        with ThreadPoolExecutor(max_workers=len(statistics.models)) as executor:
+            derivatives = tuple(
+                executor.map(
+                    lambda pair: self.jacobian(pair[0], pair[1].configurations),
+                    zip(statistics.models, statistics.shards),
+                )
+            )
+        if any(not isinstance(value, RealLogDerivativeParts) for value in derivatives):
+            raise TypeError("real-pair SR requires real log-derivative parts")
+        synchronize_devices(devices)
+        jacobian_seconds = perf_counter() - jacobian_started
+        qgt_started = perf_counter()
+        primary = devices[0]
+        parameter_count = derivatives[0].log_amplitude.shape[1]
+        dtype = derivatives[0].log_amplitude.dtype
+        amplitude_mean = torch.zeros(
+            parameter_count, dtype=dtype, device=primary
+        )
+        phase_mean = torch.zeros_like(amplitude_mean)
+        second_moment = torch.zeros(
+            (parameter_count, parameter_count), dtype=dtype, device=primary
+        )
+        for values, shard in zip(derivatives, statistics.shards):
+            weights = shard.weights
+            amplitude_mean.add_(
+                torch.sum(weights[:, None] * values.log_amplitude, dim=0).to(
+                    primary
+                )
+            )
+            phase_mean.add_(
+                torch.sum(weights[:, None] * values.phase, dim=0).to(primary)
+            )
+            second_moment.add_(
+                (
+                    (values.log_amplitude.mT * weights) @ values.log_amplitude
+                    + (values.phase.mT * weights) @ values.phase
+                ).to(primary)
+            )
+        qgt = second_moment - (
+            amplitude_mean[:, None] * amplitude_mean[None, :]
+            + phase_mean[:, None] * phase_mean[None, :]
+        )
+        force = torch.zeros(parameter_count, dtype=dtype, device=primary)
+        for values, shard in zip(derivatives, statistics.shards):
+            amplitude_centered = (
+                values.log_amplitude - amplitude_mean.to(values.log_amplitude.device)
+            )
+            phase_centered = values.phase - phase_mean.to(values.phase.device)
+            centered_real = (
+                shard.local_energy_real - shard.energy
+            ).detach()
+            centered_imag = (
+                shard.local_energy_imag - shard.energy_imag
+            ).detach()
+            force.add_(
+                torch.sum(
+                    shard.weights[:, None]
+                    * (
+                        amplitude_centered * centered_real[:, None]
+                        + phase_centered * centered_imag[:, None]
+                    ),
+                    dim=0,
+                ).to(primary)
+            )
+        synchronize_devices(devices)
+        return qgt, force, jacobian_seconds, perf_counter() - qgt_started
+
     def step(
         self,
         model: NeuralQuantumState,
-        statistics: SampledEnergy | ShardedSampledEnergy,
+        statistics: (
+            SampledEnergy
+            | ShardedSampledEnergy
+            | RealPairSampledEnergy
+            | RealPairShardedSampledEnergy
+        ),
     ) -> OptimizerStep:
-        if isinstance(statistics, ShardedSampledEnergy):
+        if isinstance(statistics, RealPairShardedSampledEnergy):
+            qgt, force, jacobian_seconds, qgt_force_seconds = (
+                self._sharded_real_qgt_and_force(statistics)
+            )
+        elif isinstance(statistics, RealPairSampledEnergy):
+            qgt, force, jacobian_seconds, qgt_force_seconds = (
+                self._real_qgt_and_force(model, statistics)
+            )
+        elif isinstance(statistics, ShardedSampledEnergy):
             qgt, force, jacobian_seconds, qgt_force_seconds = (
                 self._sharded_qgt_and_force(statistics)
             )
@@ -315,7 +500,9 @@ class SR(GroundStateOptimizer):
         metrics["qgt_force_seconds"] = qgt_force_seconds
         metrics["solve_seconds"] = diagnostics.solve_seconds
         metrics["qgt_dimension"] = qgt.shape[0]
-        if isinstance(statistics, ShardedSampledEnergy):
+        if isinstance(
+            statistics, (ShardedSampledEnergy, RealPairShardedSampledEnergy)
+        ):
             metrics["num_devices"] = len(statistics.models)
         return OptimizerStep(
             diagnostics.gradient_norm,

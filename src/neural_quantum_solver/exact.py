@@ -13,7 +13,7 @@ class EigenResult:
 
 
 class ExactDiagonalizer:
-    """Dense Hermitian eigensolver for small reference systems."""
+    """用于小型参考系统的稠密 Hermitian 本征求解器。"""
 
     def __init__(
         self,

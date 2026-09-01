@@ -12,14 +12,20 @@ from .estimators import (
     sampled_energy,
     sharded_sampled_energy,
 )
-from .models import NeuralQuantumState
+from .models import AmplitudePhaseNQS, NeuralQuantumState
+from .real_estimators import (
+    RealPairSampledEnergy,
+    RealPairShardedSampledEnergy,
+    real_pair_sampled_energy,
+    real_pair_sharded_sampled_energy,
+)
 from .samplers import ExactSampler, SampleBatch, Sampler
 from .systems import PhysicalSystem
 
 
 @dataclass
 class VariationalState:
-    """A model, physical system, and sampling strategy treated as one state."""
+    """将模型、物理系统和采样策略组合成一个变分态。"""
 
     system: PhysicalSystem
     model: NeuralQuantumState
@@ -67,7 +73,9 @@ class VariationalState:
         def evaluate(pair):
             model, shard = pair
             with torch.no_grad():
-                return model.log_psi(shard)
+                if isinstance(model, AmplitudePhaseNQS):
+                    return model.log_amplitude(shard)
+                return model.log_psi(shard).real
 
         with ThreadPoolExecutor(max_workers=self.num_gpus) as executor:
             log_amplitudes = tuple(
@@ -78,7 +86,7 @@ class VariationalState:
             )
             local_log_norms = torch.stack(
                 [
-                    torch.logsumexp(2 * values.real, dim=0).to(
+                    torch.logsumexp(2 * values, dim=0).to(
                         self.device_mesh.primary
                     )
                     for values in log_amplitudes
@@ -88,7 +96,7 @@ class VariationalState:
             return tuple(
                 SampleBatch(
                     shard,
-                    torch.exp(2 * values.real - log_norm.to(values.device)),
+                    torch.exp(2 * values - log_norm.to(values.device)),
                     None,
                     True,
                 )
@@ -135,8 +143,19 @@ class VariationalState:
 
     def expect_energy(
         self, *, resample: bool = False
-    ) -> SampledEnergy | ShardedSampledEnergy:
+    ) -> (
+        SampledEnergy
+        | ShardedSampledEnergy
+        | RealPairSampledEnergy
+        | RealPairShardedSampledEnergy
+    ):
         sample = self.sample() if resample or self._last_sample is None else self._last_sample
+        if isinstance(self.model, AmplitudePhaseNQS):
+            if isinstance(sample, tuple):
+                return real_pair_sharded_sampled_energy(
+                    self.replicas, self.system, sample
+                )
+            return real_pair_sampled_energy(self.model, self.system, sample)
         if isinstance(sample, tuple):
             return sharded_sampled_energy(
                 self.replicas, self.system, sample

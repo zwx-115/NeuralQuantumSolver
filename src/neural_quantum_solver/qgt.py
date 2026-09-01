@@ -23,7 +23,7 @@ class QGTDiagnostics:
 def quantum_geometric_tensor(
     log_derivatives: torch.Tensor, probabilities: torch.Tensor
 ) -> torch.Tensor:
-    """Compute S_ij=<O_i* O_j>-<O_i*><O_j>."""
+    """计算 S_ij=<O_i* O_j>-<O_i*><O_j>。"""
     probabilities = probabilities / probabilities.sum()
     weighted = probabilities[:, None] * log_derivatives
     mean = torch.complex(
@@ -32,6 +32,25 @@ def quantum_geometric_tensor(
     )
     centered = log_derivatives - mean
     return (centered.conj().mT * probabilities) @ centered
+
+
+def real_quantum_geometric_tensor(
+    amplitude_derivatives: torch.Tensor,
+    phase_derivatives: torch.Tensor,
+    probabilities: torch.Tensor,
+) -> torch.Tensor:
+    """不构造复数张量，计算实参数空间度量 Re[Cov(O*, O)]。"""
+    probabilities = probabilities / probabilities.sum()
+    amplitude_mean = torch.sum(
+        probabilities[:, None] * amplitude_derivatives, dim=0
+    )
+    phase_mean = torch.sum(probabilities[:, None] * phase_derivatives, dim=0)
+    amplitude_centered = amplitude_derivatives - amplitude_mean
+    phase_centered = phase_derivatives - phase_mean
+    return (
+        (amplitude_centered.mT * probabilities) @ amplitude_centered
+        + (phase_centered.mT * probabilities) @ phase_centered
+    )
 
 
 def solve_sr(

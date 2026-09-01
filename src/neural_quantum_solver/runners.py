@@ -27,7 +27,7 @@ class GroundStateRunResult:
 
 
 class ExactGroundStateRunner:
-    """Differentiable full-summation ground-state optimization."""
+    """可微分的完整求和基态优化。"""
 
     def __init__(
         self, *, learning_rate: float = 1e-2, steps: int = 1000,

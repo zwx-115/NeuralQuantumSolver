@@ -1,4 +1,4 @@
-"""Monte Carlo NQS ground-state optimization with Adam."""
+"""使用 Adam 和 Monte Carlo 采样优化 NQS 基态。"""
 
 from pathlib import Path
 import sys
@@ -6,7 +6,7 @@ import sys
 import torch
 
 
-# Allow this example to run directly without `pip install -e .`.
+# 无需先执行 `pip install -e .`，也可以直接运行这个示例。
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = PROJECT_ROOT / "src"
 if str(SOURCE_ROOT) not in sys.path:
@@ -14,7 +14,7 @@ if str(SOURCE_ROOT) not in sys.path:
 
 from neural_quantum_solver import (  # noqa: E402
     Adam,
-    ComplexRBM,
+    AmplitudePhaseRBM,
     ExactDiagonalizer,
     GroundStateDriver,
     MetropolisSampler,
@@ -24,11 +24,11 @@ from neural_quantum_solver import (  # noqa: E402
 from neural_quantum_solver.estimators import exact_energy  # noqa: E402
 
 
-# Change these two values when moving between NVIDIA and Moore Threads.
+# 在 NVIDIA 和摩尔线程之间切换时修改下面两个参数。
 DEVICE = "cuda:0"  # NVIDIA: "cuda:0"; Moore Threads: "musa"
 NUM_GPUS = 1
 
-# Physical system shared by ED and NQS.
+# ED 与 NQS 共用同一个物理系统。
 system = tilted_field_ising(
     num_sites=10,
     coupling=1.0,
@@ -37,16 +37,16 @@ system = tilted_field_ising(
     periodic=False,
 )
 
-model = ComplexRBM(
+model = AmplitudePhaseRBM(
     num_visible=system.hilbert.num_sites,
     num_hidden=4 * system.hilbert.num_sites,
-    dtype=torch.complex64,
+    dtype=torch.float32,
     device=DEVICE,
     seed=7,
 )
 
-# Total retained samples per optimization step are num_chains * sweeps.
-# sweep_size=None means num_sites local MC updates between retained samples.
+# 每个优化步保留的样本总数为 num_chains * sweeps。
+# sweep_size=None 表示两个保留样本之间执行 num_sites 次局域 MC 更新。
 sampler = MetropolisSampler(
     num_chains=100,
     thermal_sweeps=20,
@@ -62,8 +62,8 @@ variational_state = VariationalState(
     num_gpus=NUM_GPUS,
 )
 
-# Adam uses one scalar VMC surrogate loss and one backward call. It does not
-# construct the per-sample LogJacobian required by SR.
+# Adam 使用一个标量 VMC 代理损失和一次反向传播，不会构造 SR 所需的
+# 逐样本 LogJacobian。
 optimizer = Adam(
     learning_rate=0.001,
 )
@@ -79,7 +79,7 @@ result = driver.run(
     checkpoint_path=PROJECT_ROOT / "checkpoints" / "ground_state_adam.pt",
 )
 
-# Evaluate the final NQS without Monte Carlo noise and compare with ED.
+# 消除 Monte Carlo 噪声后评估最终 NQS，并与 ED 对比。
 exact = ExactDiagonalizer(dtype=torch.complex128, device="cpu").ground_state(system)
 final_full_sum_energy = exact_energy(model, system).energy.item()
 print(f"exact ground energy    = {exact.energy.item():.12f}")

@@ -6,7 +6,7 @@ import torch
 
 @dataclass(frozen=True)
 class SpinHalfHilbert:
-    """Unconstrained spin-1/2 product basis using Pauli-Z eigenvalues."""
+    """使用 Pauli-Z 本征值表示的无约束自旋 1/2 直积基。"""
 
     num_sites: int
 
@@ -19,7 +19,7 @@ class SpinHalfHilbert:
         return 1 << self.num_sites
 
     def all_states(self, *, device: torch.device | str = "cpu") -> torch.Tensor:
-        """Return states in legacy binary order: bit 0 maps to +1."""
+        """按旧版二进制顺序返回基矢：比特 0 对应 +1。"""
         indices = torch.arange(self.size, device=device, dtype=torch.int64)
         shifts = torch.arange(self.num_sites - 1, -1, -1, device=device, dtype=torch.int64)
         bits = torch.bitwise_and(indices[:, None] >> shifts, 1)
