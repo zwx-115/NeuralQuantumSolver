@@ -1,0 +1,84 @@
+{
+  "arguments": {
+    "adam_lr": 0.01,
+    "cg_steps": 12,
+    "device": "cpu",
+    "diagnose": true,
+    "dt": 0.05,
+    "families": [
+      "trajectory"
+    ],
+    "final_time": 0.1,
+    "hidden_multiplier": 4,
+    "jacobian_chunk_size": 512,
+    "larger_adam_lr": 0.003,
+    "larger_hidden_multiplier": 8,
+    "methods": [
+      "adam",
+      "sr",
+      "curvature"
+    ],
+    "mode": "rollout",
+    "num_sites": 2,
+    "output": null,
+    "parameter_radius": 0.5,
+    "radius": 0.1,
+    "regularization": 0.01,
+    "seeds": [
+      1
+    ],
+    "sr_lr": 0.05,
+    "steps": 4,
+    "times": [
+      1.5,
+      2.0
+    ],
+    "tolerance": 1e-10,
+    "trajectory_dir": "benchmark_results\\optimizer_comparison\\smoke_input_20260922_163243_641284"
+  },
+  "cuda_version": "13.2",
+  "curvature": {
+    "accept_ratio": 0.1,
+    "cg_rtol": 1e-06,
+    "cg_steps": 12,
+    "curvature": "full",
+    "interior_fraction": 0.9,
+    "max_radius": 0.5,
+    "max_trials": 6,
+    "min_radius": 1e-07,
+    "parameter_radius": 0.5,
+    "radius": 0.1,
+    "regularization": 0.01
+  },
+  "device_name": "cpu",
+  "dtype": "torch.complex128",
+  "evolution_system": {
+    "coupling": 1.0,
+    "field_x": 0.5,
+    "field_z": 0.5,
+    "periodic": false
+  },
+  "exact_summation": true,
+  "git_commit": "9e8b6b39b378c7066e223cd794b742097c685551",
+  "git_status": "M examples/time_evolution/projected_time_evolution.py\n?? benchmark_results/\n?? configs/\n?? docs/CURVATURE_OPTIMIZER.md\n?? docs/DIAGNOSTICS.md\n?? docs/reports/\n?? examples/diagnostics/\n?? examples/time_evolution/projected_time_evolution_sr.py\n?? src/neural_quantum_solver/diagnostics/\n?? src/neural_quantum_solver/experiments/\n?? tests/test_diagnostics.py\n?? tests/test_overlap_curvature.py",
+  "ground_system": {
+    "coupling": 0.0,
+    "field_x": 0.5,
+    "field_z": 0.0,
+    "periodic": false
+  },
+  "output_directory": "D:\\OneDrive\\NQS\\NeuralQuantumSolver\\benchmark_results\\optimizer_comparison\\20260922_163245_504451",
+  "rollout_selection": "best iterate for every method",
+  "source_checkpoint_sha256": {
+    "benchmark_results\\optimizer_comparison\\smoke_input_20260922_163243_641284\\ptvmc_t0.00.pt": "84c1891232796027e5ef335a5e9543062d3c56a4932d7fc543b3538de9ee86ee"
+  },
+  "sr": {
+    "backtrack_factor": 0.5,
+    "jacobian_chunk_size": 512,
+    "learning_rate": 0.05,
+    "max_backtracks": 8,
+    "rcond": 1e-12,
+    "regularization": 0.01
+  },
+  "torch_version": "2.12.1+cu132"
+}

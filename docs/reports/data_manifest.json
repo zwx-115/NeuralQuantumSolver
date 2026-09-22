@@ -1,0 +1,23 @@
+{
+  "counts": {
+    "trajectory": 21,
+    "same_size_restart": 105,
+    "larger_restart": 105,
+    "B/C": 21
+  },
+  "trajectory_rows": 41,
+  "converged": 11,
+  "max_positive_time_residual_difference": 2.1945995767110133e-10,
+  "inputs": {
+    "benchmark_results\\diagnostics\\late_time_snapshot_adam_1000_seed5\\results.csv": "3724c94a5f24fd6f18da53e85525bdd4679cbd8b670f0be863d9170ec9225094",
+    "benchmark_results\\diagnostics\\late_time_snapshot_adam_1000_seed5\\config.json": "8e2baa94de18de28ce7fd250ac39d552818230ef61bb4072598d21a6b696203b",
+    "benchmark_results\\diagnostics\\late_time_snapshot_adam_1000_seed5\\summary.json": "27180994f94965a20173761e05afeee1f5d237965b8b452fcba1f83611f9daa4",
+    "benchmark_results\\projected_ptvmc_trajectory\\trajectory.csv": "6388c136e547e7b8b0dddcb22da800f4938f18466a650ab01badbb236e77a9d7",
+    "benchmark_results\\projected_ptvmc_trajectory\\run_config.json": "8678826eb3a29df5c00952effbe2f118ca5ac80a232beef6e46766abfda870e9",
+    "benchmark_results\\diagnostics\\late_time_snapshot_adam_1000_seed5\\figures\\a_snapshot_infidelity.png": "f782dc3c9597703781b8bd389b41d22a2479f6113a64c9476f501dba87c24b68",
+    "benchmark_results\\diagnostics\\late_time_snapshot_adam_1000_seed5\\figures\\b_qgt_scalars.png": "d8ff5648c6a4b977adb58c4f06e0f4c8378a8e87ac55729e9ae86a6e167afb7d",
+    "benchmark_results\\diagnostics\\late_time_snapshot_adam_1000_seed5\\figures\\b_qgt_spectra.png": "a36dd9fbd07bf256f58e251326fba00bf7cba7f354234f4e742827f5d45a496e",
+    "benchmark_results\\diagnostics\\late_time_snapshot_adam_1000_seed5\\figures\\c_tangent_residual.png": "b1a5c8aae4858edd5ae24401799dd767b39d20ee77b4d5e25149d63e969c19d6",
+    "benchmark_results\\diagnostics\\late_time_snapshot_adam_1000_seed5\\figures\\rollout_quality.png": "99cc17db4ef8161c5072237c51c7b67a114a030eecc1be2e5ba851aa0993ce3f"
+  }
+}

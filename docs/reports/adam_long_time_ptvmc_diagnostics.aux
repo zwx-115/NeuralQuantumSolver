@@ -1,0 +1,52 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand*\HyPL@Entry[1]{}
+\HyPL@Entry{0<</S/D>>}
+\@writefile{toc}{\contentsline {section}{\numberline {1}研究背景与问题}{1}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}物理模型与实验设置}{1}{section.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Hamiltonian 与淬火协议}{1}{subsection.2.1}\protected@file@percent }
+\newlabel{eq:hamiltonian}{{1}{1}{Hamiltonian 与淬火协议}{equation.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}RBM 参数化与归一化}{2}{subsection.2.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Adam 基线设置。轨迹投影预算与 A 快照拟合预算不同。}}{2}{table.caption.1}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{tab:settings}{{1}{2}{Adam 基线设置。轨迹投影预算与 A 快照拟合预算不同。}{table.caption.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}数值方法与诊断定义}{2}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}ED 参考与 projected p-tVMC}{2}{subsection.3.1}\protected@file@percent }
+\newlabel{eq:local}{{8}{3}{ED 参考与 projected p-tVMC}{equation.8}{}}
+\newlabel{eq:global}{{9}{3}{ED 参考与 projected p-tVMC}{equation.9}{}}
+\@writefile{toc}{\contentsline {paragraph}{原始 CSV 的记录约定。}{3}{paragraph*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}A：冻结精确时间切片拟合}{3}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}B：QGT 谱与有效秩}{3}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}C：投影 Hilbert 空间中的切空间残差}{4}{subsection.3.4}\protected@file@percent }
+\newlabel{eq:tangent}{{18}{4}{C：投影 Hilbert 空间中的切空间残差}{equation.18}{}}
+\newlabel{eq:local-asymptotic}{{19}{4}{C：投影 Hilbert 空间中的切空间残差}{equation.19}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}结果}{4}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}原始 trajectory 的局部与全局误差}{4}{subsection.4.1}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Adam 原始轨迹：左为 $L_{\rm  ED}$；右为原 CSV 的最后一次内部更新前 \texttt  {projection\_loss}。右图时间标记为该步终点。精确更新后误差应使用 $1-\texttt  {step\_fidelity}$。}}{5}{figure.caption.3}\protected@file@percent }
+\newlabel{fig:rollout}{{1}{5}{Adam 原始轨迹：左为 $L_{\rm ED}$；右为原 CSV 的最后一次内部更新前 \texttt {projection\_loss}。右图时间标记为该步终点。精确更新后误差应使用 $1-\texttt {step\_fidelity}$。}{figure.caption.3}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces A 的代表性时间点。随机重启列分别报告5个种子的最小值和中位数；所有误差均对 ED 态计算。}}{5}{table.caption.4}\protected@file@percent }
+\newlabel{tab:a}{{2}{5}{A 的代表性时间点。随机重启列分别报告5个种子的最小值和中位数；所有误差均对 ED 态计算。}{table.caption.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}A：轨迹之外仍存在更低误差的 RBM}{6}{subsection.4.2}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces A：所有纵坐标均为对冻结 ED 态的 infidelity。左图区分原始 trajectory、 checkpoint 再优化和两种随机重启；右图显示5个种子的散点与中位数。 既有图片标题中的“最佳可达”仅指本轮有限预算内实际评估到的最小值。}}{6}{figure.caption.5}\protected@file@percent }
+\newlabel{fig:a}{{2}{6}{A：所有纵坐标均为对冻结 ED 态的 infidelity。左图区分原始 trajectory、 checkpoint 再优化和两种随机重启；右图显示5个种子的散点与中位数。 既有图片标题中的“最佳可达”仅指本轮有限预算内实际评估到的最小值。}{figure.caption.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}B：满数值秩与低有效秩并存}{6}{subsection.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}C：局部切空间限制随时间发生变化}{6}{subsection.4.4}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces B/C 的代表性数值，均在原始4L轨迹上测量。初态残差为代码截断后的值。}}{7}{table.caption.6}\protected@file@percent }
+\newlabel{tab:bc}{{3}{7}{B/C 的代表性数值，均在原始4L轨迹上测量。初态残差为代码截断后的值。}{table.caption.6}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces B：原始4L trajectory 的 QGT 数值秩、有效秩及比例、保留条件数。 中间面板比例由右轴按百分数读取。B 未使用 A 再优化后的模型，也未给出8L轨迹的秩扫描。}}{7}{figure.caption.7}\protected@file@percent }
+\newlabel{fig:b}{{3}{7}{B：原始4L trajectory 的 QGT 数值秩、有效秩及比例、保留条件数。 中间面板比例由右轴按百分数读取。B 未使用 A 再优化后的模型，也未给出8L轨迹的秩扫描。}{figure.caption.7}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces 若干时刻原始4L trajectory 的 QGT 本征值，按升序排列，纵轴采用对数刻度。 跨越多个数量级的谱与满数值秩并不矛盾。}}{7}{figure.caption.8}\protected@file@percent }
+\newlabel{fig:spectrum}{{4}{7}{若干时刻原始4L trajectory 的 QGT 本征值，按升序排列，纵轴采用对数刻度。 跨越多个数量级的谱与满数值秩并不矛盾。}{figure.caption.8}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces C：左为 QGT 公式和显式 Jacobian 最小二乘残差，右为两者的绝对差。 零值不能在对数纵轴上正常显示，故左图 $t=0$ 的 QGT 结果不可按曲线外推解读。 右图保留初态约 $10^{-8}$ 的交叉验证差异。}}{8}{figure.caption.9}\protected@file@percent }
+\newlabel{fig:c}{{5}{8}{C：左为 QGT 公式和显式 Jacobian 最小二乘残差，右为两者的绝对差。 零值不能在对数纵轴上正常显示，故左图 $t=0$ 的 QGT 结果不可按曲线外推解读。 右图保留初态约 $10^{-8}$ 的交叉验证差异。}{figure.caption.9}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}讨论：可以支持与尚不能支持的结论}{8}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{表示能力与优化。}{8}{paragraph*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{有效秩与参数效率。}{8}{paragraph*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{局部切空间与长时偏离。}{8}{paragraph*.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{后续对照。}{8}{paragraph*.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}结论}{9}{section.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {A}数据、代码与记录限制}{9}{appendix.A}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces 报告量与数据字段的映射。所有结果路径相对于仓库根目录。}}{9}{table.caption.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{A 的 checkpoint 与 loss 对齐问题。}{9}{paragraph*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{统计与复现范围。}{9}{paragraph*.16}\protected@file@percent }
+\gdef \@abspage@last{9}

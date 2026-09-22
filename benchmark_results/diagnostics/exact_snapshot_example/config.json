@@ -1,0 +1,27 @@
+{
+  "device": "cpu",
+  "dtype": "torch.complex128",
+  "experiment": "late_time_snapshot_fitting",
+  "families": [
+    "larger_restart",
+    "same_size_restart",
+    "trajectory"
+  ],
+  "settings": {
+    "learning_rate": 0.01,
+    "max_steps": 100,
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "tolerance": 1e-10
+  },
+  "times": [
+    0.0,
+    0.5,
+    1.0,
+    1.5,
+    2.0
+  ]
+}

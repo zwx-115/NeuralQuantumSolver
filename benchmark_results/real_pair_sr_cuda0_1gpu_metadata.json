@@ -1,0 +1,64 @@
+{
+  "experiment_label": "real_pair_sr_cuda0_1gpu",
+  "started_at_utc": "2026-09-01T06:45:59.884939+00:00",
+  "python_version": "3.12.13",
+  "torch_version": "2.12.1+cu132",
+  "cuda_runtime_version": "13.2",
+  "musa_runtime_version": null,
+  "devices": [
+    "cuda:0"
+  ],
+  "device_details": [
+    {
+      "device": "cuda:0",
+      "name": "NVIDIA GeForce RTX 4070 SUPER",
+      "total_memory_bytes": 12878086144
+    }
+  ],
+  "backend": "cuda",
+  "num_gpus": 1,
+  "dtype": "torch.float32",
+  "model": "AmplitudePhaseRBM",
+  "representation": "real_pair",
+  "parameter_count": 1120,
+  "sampler": "MetropolisSampler",
+  "sampler_config": {
+    "num_chains": 10000,
+    "thermal_sweeps": 20,
+    "sweeps": 1,
+    "sweep_size": null
+  },
+  "optimizer": "SR",
+  "optimizer_config": {
+    "learning_rate": 0.05,
+    "regularization": 0.001,
+    "rcond": 1e-12,
+    "solver_device": "auto",
+    "jacobian": {
+      "class": "LogJacobian",
+      "method": "auto",
+      "chunk_size": null
+    }
+  },
+  "num_sites": 10,
+  "seed": 666,
+  "hilbert_size": 1024,
+  "hamiltonian_terms": 29,
+  "run_config": {
+    "coupling": 1.0,
+    "field_x": 0.5,
+    "field_z": 0.5,
+    "periodic": false,
+    "optimization_steps": 100
+  },
+  "completed_steps": 100,
+  "best_energy": -9.861562728881836,
+  "total_seconds": 211.36521150000044,
+  "exact_ground_energy": -9.861921888287696,
+  "final_nqs_full_sum_energy": -9.860971450805664,
+  "final_energy_error": 0.0009504374820323847,
+  "mean_steady_step_seconds": 2.129245149495252,
+  "median_steady_step_seconds": 0.31680810000398196,
+  "mean_steady_solve_seconds": 0.023282222222828428,
+  "end_to_end_seconds": 211.59237420000136
+}
