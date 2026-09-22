@@ -6,6 +6,8 @@ intended as a stable baseline before introducing Monte Carlo overlap estimates.
 """
 
 from copy import deepcopy
+import csv
+import json
 from pathlib import Path
 import sys
 
@@ -35,7 +37,7 @@ from neural_quantum_solver.estimators import exact_energy, exact_state  # noqa: 
 # ---------------------------------------------------------------------------
 NUM_SITES = 12
 DT = 0.05
-TIME_STEPS = 20
+TIME_STEPS = 40
 
 GROUND_STATE_STEPS = 100
 GROUND_LEARNING_RATE = 0.01
@@ -46,17 +48,21 @@ SAMPLES_PER_CHAIN = 1
 PROJECTION_STEPS = 100
 PROJECTION_LEARNING_RATE = 0.01
 
+# 保存诊断所需的实际 p-tVMC RBM；这些时间必须落在 DT 的整数步上。
+SNAPSHOT_TIMES = tuple(round(0.1 * index, 10) for index in range(21))
+
 DTYPE = torch.complex128
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEED = 7
+TRAJECTORY_DIRECTORY = PROJECT_ROOT / "benchmark_results" / "projected_ptvmc_trajectory"
 
 
 # The initial Hamiltonian defines the ground state to be prepared.
 ground_system = tilted_field_ising(
     num_sites=NUM_SITES,
-    coupling=1.0,
+    coupling=0.0,
     field_x=0.5,
-    field_z=0.5,
+    field_z=0.0,
     periodic=False,
 )
 
@@ -64,10 +70,37 @@ ground_system = tilted_field_ising(
 evolution_system = tilted_field_ising(
     num_sites=NUM_SITES,
     coupling=1.0,
-    field_x=1.0,
+    field_x=0.5,
     field_z=0.5,
     periodic=False,
 )
+
+
+def save_trajectory_checkpoint(time: float, model: ComplexRBM) -> None:
+    """保存指定时刻的 RBM 参数和可复现实验元数据。"""
+    checkpoint = {
+        "format_version": 1,
+        "time": time,
+        "model_state_dict": {
+            name: value.detach().cpu() for name, value in model.state_dict().items()
+        },
+        "model_config": {
+            "class": "ComplexRBM",
+            "num_visible": NUM_SITES,
+            "num_hidden": 4 * NUM_SITES,
+            "dtype": str(DTYPE),
+        },
+        "run_config": {
+            "dt": DT,
+            "ground_system": {"coupling": 0.0, "field_x": 0.5, "field_z": 0.0},
+            "evolution_system": {"coupling": 1.0, "field_x": 0.5, "field_z": 0.5},
+            "ground_state_steps": GROUND_STATE_STEPS,
+            "projection_steps": PROJECTION_STEPS,
+            "projection_learning_rate": PROJECTION_LEARNING_RATE,
+            "seed": SEED,
+        },
+    }
+    torch.save(checkpoint, TRAJECTORY_DIRECTORY / f"ptvmc_t{time:.2f}.pt")
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +129,7 @@ ground_state = VariationalState(
 ground_optimizer = Adam(learning_rate=GROUND_LEARNING_RATE)
 
 print("Preparing the NQS ground state")
+print(f"num_sites (L)          = {NUM_SITES}")
 print(f"device                 = {DEVICE}")
 print(f"samples per GS step    = {NUM_CHAINS * SAMPLES_PER_CHAIN}")
 ground_result = GroundStateDriver(ground_state, ground_optimizer).run(
@@ -112,6 +146,23 @@ ground_ed = ExactDiagonalizer(dtype=DTYPE, device=DEVICE)
 exact_initial = ground_ed.ground_state(ground_system)
 initial_fidelity = torch.abs(torch.vdot(exact_initial.state, initial_nqs_state)) ** 2
 initial_nqs_energy = exact_energy(model, ground_system).energy
+initial_evolution_energy = exact_energy(model, evolution_system).energy
+
+snapshot_steps = {round(time / DT): time for time in SNAPSHOT_TIMES}
+if any(step < 0 or step > TIME_STEPS for step in snapshot_steps):
+    raise ValueError("all SNAPSHOT_TIMES must lie between 0 and TIME_STEPS * DT")
+TRAJECTORY_DIRECTORY.mkdir(parents=True, exist_ok=True)
+trajectory_rows = []
+save_trajectory_checkpoint(0.0, model)
+trajectory_rows.append({
+    "step": 0,
+    "time": 0.0,
+    "projection_loss": "",
+    "step_fidelity": "",
+    "ed_fidelity": float(initial_fidelity.item()),
+    "energy": float(initial_evolution_energy.item()),
+    "magnetization_z": "",
+})
 
 print(f"ED ground energy       = {exact_initial.energy.item():.12f}")
 print(f"NQS ground energy      = {initial_nqs_energy.item():.12f}")
@@ -135,7 +186,10 @@ magnetization_z = all_configurations.to(DTYPE).mean(dim=1)
 
 current_state = initial_nqs_state
 print("\nProjected real-time evolution")
+print(f"num_sites (L)          = {NUM_SITES}")
+print(f"dt / total time        = {DT} / {DT * TIME_STEPS}")
 print(" step      time       loss        step fidelity   ED fidelity     energy          <Mz>")
+print(f"{0:5d}  {0.0:8.4f}  {'-':>10}  {'-':>13}  {initial_fidelity.item():.10f}", flush=True)
 
 for time_step in range(1, TIME_STEPS + 1):
     # Exact short-time target generated from the current projected NQS state.
@@ -172,6 +226,37 @@ for time_step in range(1, TIME_STEPS + 1):
     print(
         f"{time_step:5d}  {time:8.4f}  {projection_loss.item():.3e}  "
         f"{step_fidelity.item():.10f}  {exact_fidelity.item():.10f}  "
-        f"{energy.item(): .10f}  {mz.item(): .8f}"
+        f"{energy.item(): .10f}  {mz.item(): .8f}",
+        flush=True,
+    )
+    trajectory_rows.append({
+        "step": time_step,
+        "time": time,
+        "projection_loss": float(projection_loss.item()),
+        "step_fidelity": float(step_fidelity.item()),
+        "ed_fidelity": float(exact_fidelity.item()),
+        "energy": float(energy.item()),
+        "magnetization_z": float(mz.item()),
+    })
+    if time_step in snapshot_steps:
+        save_trajectory_checkpoint(snapshot_steps[time_step], model)
+
+with (TRAJECTORY_DIRECTORY / "trajectory.csv").open("w", newline="") as handle:
+    writer = csv.DictWriter(handle, fieldnames=trajectory_rows[0].keys())
+    writer.writeheader()
+    writer.writerows(trajectory_rows)
+
+with (TRAJECTORY_DIRECTORY / "run_config.json").open("w") as handle:
+    json.dump(
+        {
+            "dt": DT,
+            "time_steps": TIME_STEPS,
+            "snapshot_times": SNAPSHOT_TIMES,
+            "ground_system": {"coupling": 0.0, "field_x": 0.5, "field_z": 0.0},
+            "evolution_system": {"coupling": 1.0, "field_x": 0.5, "field_z": 0.5},
+            "seed": SEED,
+        },
+        handle,
+        indent=2,
     )
 
