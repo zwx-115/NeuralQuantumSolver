@@ -1,0 +1,16 @@
+# NQS 模拟器（nqs_simulator）运行依赖。
+# 建议 Python 3.10–3.12。本机验证过：Python 3.12、NumPy 2.5.4、Optuna 5.0.0。
+#
+# CPU：
+#   pip install -r requirements.txt
+#
+# NVIDIA GPU（驱动 CUDA 12.8，与验证环境一致）：
+#   pip install -r requirements.txt
+#   pip install --isolated torch --index-url https://download.pytorch.org/whl/cu128
+# 第二条会覆盖成 2.x+cu128。不要从清华/阿里云默认源装 torch，容易拿到 cu13。
+#
+# 论文复现脚本另见 paper_reproduction/requirements.txt（含 matplotlib、quimb 等，模拟器不需要）。
+
+numpy>=1.24
+optuna>=3.0
+torch>=2.0
